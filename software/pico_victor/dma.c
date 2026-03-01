@@ -442,47 +442,84 @@ static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool prel
 }
 
 static inline void setup_pins_dma_control() {
-    
-    //setup data pins BD0 to A19 to be owned by PIO as inputs
     uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
-    for (int pin = BD0_PIN; pin <= ALE_PIN; ++pin) {
+
+    // ================================================================
+    // Bus pin settlement: drive control signals safe BEFORE address bus.
+    //
+    // The original DMA card had pull-ups R2/R3/R4 on RD/, WR/, DT/R/
+    // and a pull-down on ALE to prevent floating during bus exchange
+    // (Victor 9000 Hard Disk Subsystem manual, §2.1.3.3).  Our Pico
+    // board replaces the DMA card, so those pull-ups don't exist.
+    // Without explicit ordering, there's a window where the address bus
+    // is driven (to 0x00000) while RD/, WR/, ALE float — a spurious
+    // write to the interrupt vector table.
+    //
+    // Strategy: pre-configure PIO1's output registers and pindirs for
+    // control signals, then switch the pin mux.  The instant the mux
+    // switches from PIO0→PIO1, control signals are immediately driven
+    // to safe values with no float gap.
+    // ================================================================
+
+    // PHASE 1: Pre-configure PIO1 internal state for control signals.
+    // These only touch PIO1's registers — no effect on pads yet because
+    // pin functions are still PIO0.
+    uint32_t ctrl_high_mask = (1u << RD_PIN) | (1u << WR_PIN) |
+                              (1u << DTR_PIN) | (1u << EXTIO_PIN);
+    uint32_t ctrl_out_mask  = ctrl_high_mask | (1u << ALE_PIN);
+
+    // Output values: RD/=1, WR/=1, DTR/=1, EXTIO/=1 (inactive), ALE=0 (no latch)
+    pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                              ctrl_high_mask, ctrl_out_mask);
+    // Pindirs: all control signals as OUTPUT
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                 ctrl_out_mask, ctrl_out_mask);
+
+    // PHASE 2: Switch control signal pin functions to PIO1 FIRST.
+    // At each gpio_set_function(), the pad instantly switches from
+    // "floating (PIO0 input)" to "driven safe (PIO1 output HIGH/LOW)".
+    gpio_set_function(RD_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, RD_PIN);
+    gpio_set_function(WR_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, WR_PIN);
+    gpio_set_function(DTR_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, DTR_PIN);
+    gpio_set_function(ALE_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, ALE_PIN);
+    gpio_set_function(EXTIO_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, EXTIO_PIN);
+
+    // PHASE 3: Now safe to set up address/data pins — control signals
+    // are already actively driven to safe levels.
+    // Pre-load address/data output registers to 0 (address 0x00000,
+    // harmless because ALE is held LOW so no address latch occurs).
+    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
-        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
-        //pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 1u, 1u << pin); // output direction
-
-       // printf("dma gpio_init %d  ", pin);
-        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin);
     }
 
-    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, ADDRESS_BUS_SIZE, true); // address pins as outputs
-
-    // Assign control pins to PIO, set direction and preload levels
-    uint32_t high = 1;
-    uint32_t low = 0;
-    setup_pin_dma_control(RD_PIN, GPIO_OUT, high);   // RD/ output, preload high
-    setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
-    setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
-    setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
-
-    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
+    // Address pins as outputs (safe: ALE=LOW prevents spurious latch)
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                   BD0_PIN, ADDRESS_BUS_SIZE, true);
 
     // DEN is at GPIO 40 (outside PIO's 0-31 range), use plain GPIO.
     // DEN is not needed for DMA — hold inactive (high).
     gpio_init(DEN_PIN);
-    gpio_put(DEN_PIN, 1);  // inactive (not needed for DMA)
+    gpio_put(DEN_PIN, 1);
     gpio_set_dir(DEN_PIN, GPIO_OUT);
-    
-    setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
-    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
-    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, low); // CLOCK_15B input, preload low
+
+    // Input pins: READY, CLK5, CLK15B
+    setup_pin_dma_control(READY_PIN, GPIO_IN, 0);
+    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, 0);
+    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, 0);
 
     gpio_init(SSO_PIN);
-    gpio_put(SSO_PIN, low); 
+    gpio_put(SSO_PIN, 0);
     gpio_set_dir(SSO_PIN, GPIO_OUT);
 
     gpio_init(IO_M_PIN);
-    gpio_put(IO_M_PIN, low);
+    gpio_put(IO_M_PIN, 0);
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
 
     // Explicitly release XACK by switching it to SIO/input during DMA.
@@ -493,20 +530,55 @@ static inline void setup_pins_dma_control() {
 }
 
 static inline void setup_pins_register_inputs() {
-    //setup data pins BD0 to A19 to be owned by board register PIO as inputs
-    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, 32, false); // all pins as inputs
-    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
-        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
-        gpio_set_function(pin, function);
+    // ================================================================
+    // Bus pin settlement: release address/data FIRST while control
+    // signals remain driven safe, then release control signals.
+    //
+    // This mirrors the original DMA card's behavior where the tri-state
+    // latch (IC ID) kept RD/, WR/ driven until AEN ended, and pull-ups
+    // R2/R3/R4 held them safe after release.
+    // ================================================================
 
-       // printf("PIO_REGISTERS gpio_init %d  ", pin);
-        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    uint reg_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+
+    // PHASE 1: Force control signals to safe state in case the DMA SM
+    // was stopped mid-cycle (e.g., after abort_dma_transfer).
+    // RD/=1, WR/=1, DTR/=1, EXTIO/=1 (inactive), ALE=0 (no latch)
+    uint32_t ctrl_high_mask = (1u << RD_PIN) | (1u << WR_PIN) |
+                              (1u << DTR_PIN) | (1u << EXTIO_PIN);
+    uint32_t ctrl_out_mask  = ctrl_high_mask | (1u << ALE_PIN);
+    pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                              ctrl_high_mask, ctrl_out_mask);
+    // Ensure control pindirs are OUTPUT (driving safe values)
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                 ctrl_out_mask, ctrl_out_mask);
+
+    // PHASE 2: Release address/data pins to input FIRST.
+    // Control signals still driven safe — no spurious bus cycle possible.
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                   BD0_PIN, ADDRESS_BUS_SIZE, false);
+
+    // Switch address/data pin functions to register PIO
+    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
+        gpio_set_function(pin, reg_function);
+    }
+
+    // PHASE 3: Release control signal pindirs to input.
+    // Address bus is already floating/released, so even if control
+    // signals float briefly, there's no coherent address to latch.
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                 0, ctrl_out_mask);
+
+    // Switch control + remaining pin functions to register PIO.
+    // XACK(26) and EXTIO(27) are register SM side-set pins and must
+    // be on PIO0's function for the register SM to drive them.
+    for (int pin = RD_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        gpio_set_function(pin, reg_function);
     }
 
     // Release IO/M so the CPU can drive it during normal register cycles.
     gpio_set_function(IO_M_PIN, GPIO_FUNC_SIO);
     gpio_set_dir(IO_M_PIN, GPIO_IN);
-    
 } 
 
 
