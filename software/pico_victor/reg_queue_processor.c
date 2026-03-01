@@ -28,6 +28,9 @@ defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")))
 cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
 static int read_request_counter = 0;
 
+// Core 1 liveness heartbeat
+volatile uint64_t defer_last_process_us = 0;
+
 void cached_status_sync_from_bus(const dma_registers_t *dma) {
     if (!dma) {
         return;
@@ -395,6 +398,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
             return;
     }
     defer_queue.processed++;
+    defer_last_process_us = time_us_64();
 }
 
 // Core 1 worker main loop

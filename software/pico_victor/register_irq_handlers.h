@@ -21,6 +21,9 @@ extern volatile uint32_t isr_tx_fifo_full_count;
 extern volatile uint32_t isr_post_status_phase_count;
 extern volatile bool status_phase_flag;
 
+// RESET event counter (incremented in ISR on DMA_RESET_BIT)
+extern volatile uint32_t sasi_reset_count;
+
 // Status-phase breakdown counters
 extern volatile uint32_t diag_status_reads;
 extern volatile uint32_t diag_data_reads;

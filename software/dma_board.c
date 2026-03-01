@@ -146,6 +146,23 @@ static void dump_pio0_and_pin_state(void) {
            (unsigned long)defer_queue.processed,
            (unsigned long)defer_queue.drops);
 
+    // Command timing diagnostics
+    printf("Cmd timing: last=%lu us  max=%lu us  >1s=%lu  >4s=%lu\n",
+           (unsigned long)sasi_last_cmd_us,
+           (unsigned long)sasi_max_cmd_us,
+           (unsigned long)sasi_cmd_over_1s_count,
+           (unsigned long)sasi_cmd_over_4s_count);
+    printf("RESET count: %lu\n", (unsigned long)sasi_reset_count);
+
+    // Core 1 liveness
+    uint64_t now = time_us_64();
+    uint64_t last_proc = defer_last_process_us;
+    uint64_t defer_age_us = (last_proc > 0) ? (now - last_proc) : 0;
+    printf("Defer heartbeat: last_process=%llu us ago  (head=%lu tail=%lu)\n",
+           (unsigned long long)defer_age_us,
+           (unsigned long)defer_queue.head,
+           (unsigned long)defer_queue.tail);
+
     printf("=== END PIO0 STATE ===\n\n");
 }
 
@@ -312,6 +329,13 @@ void initialize_uart() {
 
 
     printf("waiting for DMA register access...\n");
+
+    // Stuck-state detector state
+    uint32_t last_defer_processed = 0;
+    uint32_t last_isr_calls = 0;
+    uint64_t last_defer_check_us = time_us_64();
+    bool stuck_already_reported = false;
+
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
         int cmd = getchar_timeout_us(0);
@@ -320,6 +344,37 @@ void initialize_uart() {
         }
         if (sasi_log_auto_flush_enabled && storage_ready) {
             sasi_log_flush_if_ready(&dma_registers);
+        }
+
+        // Auto stuck-state detector: every ~100ms check if Core 1 is making progress
+        uint64_t now = time_us_64();
+        if (now - last_defer_check_us > 100000) {
+            uint32_t current_processed = defer_queue.processed;
+            uint32_t current_isr_calls = isr_call_count;
+
+            if (storage_ready &&
+                current_processed == last_defer_processed &&
+                current_isr_calls > last_isr_calls + 1000 &&
+                !stuck_already_reported) {
+                // ISR is busy but Core 1 is not processing — stuck!
+                printf("\n!!! STUCK DETECTED: ISR calls=%lu (+%lu) defer_processed=%lu (stalled) !!!\n",
+                       (unsigned long)current_isr_calls,
+                       (unsigned long)(current_isr_calls - last_isr_calls),
+                       (unsigned long)current_processed);
+                dump_pio0_and_pin_state();
+                sasi_trace_dump();
+                register_irq_trace_dump("auto-stuck");
+                stuck_already_reported = true;
+            }
+
+            // Reset stuck flag if Core 1 resumes processing
+            if (current_processed != last_defer_processed) {
+                stuck_already_reported = false;
+            }
+
+            last_defer_processed = current_processed;
+            last_isr_calls = current_isr_calls;
+            last_defer_check_us = now;
         }
 
         tight_loop_contents();

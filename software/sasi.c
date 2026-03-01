@@ -97,6 +97,12 @@ static uint8_t compute_expected_pattern_crc(uint32_t lba) {
 }
 #endif // SASI_DMA_READ_VERIFY
 
+// Per-command timing diagnostics
+volatile uint32_t sasi_last_cmd_us = 0;
+volatile uint32_t sasi_max_cmd_us = 0;
+volatile uint32_t sasi_cmd_over_1s_count = 0;
+volatile uint32_t sasi_cmd_over_4s_count = 0;
+
 // SASI command state - file-scope so it can be reset on device reset
 static uint8_t sasi_command_buffer[16];
 static int sasi_cmd_index = 0;
@@ -451,6 +457,8 @@ bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte) {
 }
 
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
+    uint64_t cmd_start_us = time_us_64();
+
     // Parse Read(6) - command 0x08
     // cmd[1] (5 MSBs), cmd[2], cmd[3] = LBA, cmd[4] = count
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
@@ -553,6 +561,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // If host reset during the loop, skip status — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
         return;
     }
 
@@ -600,6 +613,15 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->dma_address.full = local_dma_addr;
     }
 
+    // Record command timing
+    {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
+    }
+
     // Signal completion to host
     cached_sync_dma_address(dma);
     if (transfer_ok) {
@@ -612,6 +634,8 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 }
 
 void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
+    uint64_t cmd_start_us = time_us_64();
+
     // Parse Write(6)
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
@@ -747,6 +771,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // If host reset during the loop, skip status/sync — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
         return;
     }
 
@@ -766,6 +795,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = 0;
         // Write back final local address so completion log and BIOS readback are correct
         dma->dma_address.full = local_dma_addr;
+    }
+
+    // Record command timing
+    {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
     }
 
     cached_sync_dma_address(dma);

@@ -31,6 +31,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <dos.h>
+#include <i86.h>
 
 /* Test parameters */
 #define NUM_SMALL_FILES     25
@@ -38,6 +40,37 @@
 #define LARGE_FILE_SIZE     819200UL    /* 800K */
 #define IO_BUFFER_SIZE      4096U       /* 4K I/O chunks */
 #define SECTOR_SIZE         512U
+
+/*
+ * Custom INT 24h (DOS critical error) handler.
+ *
+ * The default handler prompts "Abort, Retry, Fail?" and if Abort is
+ * selected, DOS kills the program immediately — no C cleanup, no
+ * printf, nothing.  This handler logs the error to the console and
+ * returns "Fail" (3) so the calling DOS function returns an error
+ * code that our C code can handle gracefully.
+ */
+static volatile uint16_t crit_err_count = 0;
+static volatile uint16_t crit_err_last_code = 0;
+static volatile uint16_t crit_err_last_drive = 0;
+
+static void (__interrupt __far *old_int24)(void);
+
+void __interrupt __far crit_error_handler(union INTPACK r)
+{
+    /* AH = error type bits, AL = drive number (for disk errors) */
+    /* DI low byte = extended error code */
+    crit_err_count++;
+    crit_err_last_code = r.w.di & 0xFF;
+    crit_err_last_drive = r.w.ax & 0xFF;
+
+    /* Return action code in AL:
+     *   0 = Ignore, 1 = Retry, 2 = Abort, 3 = Fail
+     * We choose "Fail" so DOS returns an error to our code
+     * instead of killing the process.
+     */
+    r.w.ax = (r.w.ax & 0xFF00) | 0x0003;
+}
 
 /* Target drive prefix: empty or "C:\" */
 static char drive_prefix[4] = "";
@@ -127,9 +160,23 @@ static int write_one_file(const char *fname, uint8_t file_id,
         offset += chunk_len;
         remaining -= chunk_len;
         total_bytes_written += chunk_len;
+
+        /* Check if a DOS critical error occurred during fwrite */
+        if (crit_err_count > 0) {
+            printf("  ERROR: DOS critical error during write of %s "
+                   "at offset %lu (err=0x%02X)\n",
+                   fname, offset, crit_err_last_code);
+            total_errors++;
+            fclose(fp);
+            return 0;
+        }
     }
 
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        printf("  ERROR: fclose failed on %s (errno=%d)\n", fname, errno);
+        total_errors++;
+        return 0;
+    }
     return 1;
 }
 
@@ -332,6 +379,16 @@ static int phase3_write_large_file(void)
             remaining -= chunk_len;
             total_bytes_written += chunk_len;
 
+            /* Check if a DOS critical error occurred during fwrite */
+            if (crit_err_count > 0) {
+                printf("  ERROR: DOS critical error during large write "
+                       "at offset %lu (err=0x%02X)\n",
+                       offset, crit_err_last_code);
+                total_errors++;
+                ok = 0;
+                break;
+            }
+
             if (offset - last_report >= 102400UL) {
                 printf("  Written %luK / %luK...\n",
                        (offset >> 10), (LARGE_FILE_SIZE >> 10));
@@ -339,7 +396,12 @@ static int phase3_write_large_file(void)
             }
         }
 
-        fclose(fp);
+        if (fclose(fp) != 0) {
+            printf("  ERROR: fclose failed on %s (errno=%d)\n",
+                   bigname, errno);
+            total_errors++;
+            ok = 0;
+        }
     }
 
     printf("  Phase 3 complete: %lu bytes written\n",
@@ -466,6 +528,15 @@ int main(int argc, char *argv[])
     int ch;
     uint32_t total_data;
 
+    /* Install custom INT 24h handler so DOS critical errors return to
+     * our code instead of silently aborting the program. */
+    old_int24 = _dos_getvect(0x24);
+    _dos_setvect(0x24, crit_error_handler);
+
+    /* Make stdout line-buffered so progress messages appear immediately.
+     * Without this, printf output can be lost if the program is killed. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     /* Parse optional drive letter argument */
     if (argc > 1 && argv[1][0] != '\0') {
         char dl = argv[1][0];
@@ -540,7 +611,15 @@ int main(int argc, char *argv[])
     printf("Files created:        %u/%d\n", files_created, NUM_SMALL_FILES);
     printf("Files verified OK:    %u/%d\n", files_verified, NUM_SMALL_FILES);
 
-    if (all_passed) {
+    if (crit_err_count > 0) {
+        printf("DOS critical errors:  %u (last code=0x%02X drive=%c:)\n",
+               crit_err_count, crit_err_last_code,
+               'A' + crit_err_last_drive);
+    } else {
+        printf("DOS critical errors:  0\n");
+    }
+
+    if (all_passed && crit_err_count == 0) {
         printf("\nRESULT: ALL TESTS PASSED\n");
     } else {
         printf("\nRESULT: FAILURES DETECTED\n");
@@ -553,7 +632,10 @@ int main(int argc, char *argv[])
         cleanup_test_files();
     }
 
+    /* Restore original INT 24h handler */
+    _dos_setvect(0x24, old_int24);
+
     printf("\nPress any key to exit...\n");
     getch();
-    return all_passed ? 0 : 1;
+    return (all_passed && crit_err_count == 0) ? 0 : 1;
 }

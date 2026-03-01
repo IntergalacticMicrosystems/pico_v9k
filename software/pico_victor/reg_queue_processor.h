@@ -90,6 +90,9 @@ static inline uint8_t defer_get_cached(cached_registers_t *cached, uint32_t offs
     return cached->values[offset & 0xFF];
 }
 
+// Core 1 liveness heartbeat (timestamp of last defer_process_entry call)
+extern volatile uint64_t defer_last_process_us;
+
 // External cache and queue instances - place in time_critical section for fast access
 extern defer_queue_t defer_queue;
 extern cached_registers_t cached_regs;
