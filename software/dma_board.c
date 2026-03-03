@@ -42,19 +42,223 @@ extern queue_t log_queue;
 volatile bool storage_ready = false;
 
 #ifndef CORE1_STACK_WORDS
-#define CORE1_STACK_WORDS 2048u  // 8 KiB explicit Core1 stack for deferred + FatFS workload
+#define CORE1_STACK_WORDS 4096u  // 16 KiB explicit Core1 stack for deferred + FatFS workload
 #endif
 
 static uint32_t core1_stack[CORE1_STACK_WORDS] __attribute__((aligned(8)));
+
+// Stack canary: paint the bottom of Core 1's stack with a known pattern.
+// Core 0's main loop checks periodically — if overwritten, stack overflow occurred.
+#define STACK_CANARY_WORDS 32u
+#define STACK_CANARY_PATTERN 0xDEADBEEFu
+
+static void stack_canary_init(void) {
+    for (uint32_t i = 0; i < STACK_CANARY_WORDS; i++) {
+        core1_stack[i] = STACK_CANARY_PATTERN;
+    }
+}
+
+// Returns the number of canary words still intact (0 = fully overwritten).
+static uint32_t stack_canary_check(void) {
+    uint32_t intact = 0;
+    for (uint32_t i = 0; i < STACK_CANARY_WORDS; i++) {
+        if (core1_stack[i] == STACK_CANARY_PATTERN) {
+            intact++;
+        }
+    }
+    return intact;
+}
+
+// =========================================================================
+// HardFault handler: capture fault registers, then blink GPIO 47.
+//
+// The Cortex-M33 pushes {R0-R3, R12, LR, PC, xPSR} to the active stack
+// on exception entry.  We extract these plus the SCB fault status registers
+// (CFSR, HFSR, MMFAR, BFAR) and store them in a global struct that Core 0
+// can dump over UART — even if the fault happened on Core 1.
+//
+// The FatFS library's crash.c normally provides isr_hardfault, but we
+// compile it with PICO_RISCV=1 (see CMakeLists) to disable that handler.
+// =========================================================================
+#define FAULT_LED_PIN 47
+#define FAULT_INFO_MAGIC 0xDEADFA17u
+
+typedef struct {
+    uint32_t r0;         // offset  0: stacked R0
+    uint32_t r1;         // offset  4: stacked R1
+    uint32_t r2;         // offset  8: stacked R2
+    uint32_t r3;         // offset 12: stacked R3
+    uint32_t r12;        // offset 16: stacked R12
+    uint32_t lr;         // offset 20: stacked LR (return address)
+    uint32_t pc;         // offset 24: stacked PC (faulting instruction)
+    uint32_t xpsr;       // offset 28: stacked xPSR
+    uint32_t cfsr;       // offset 32: Configurable Fault Status Register
+    uint32_t hfsr;       // offset 36: HardFault Status Register
+    uint32_t mmfar;      // offset 40: MemManage Fault Address Register
+    uint32_t bfar;       // offset 44: BusFault Address Register
+    uint32_t exc_return; // offset 48: EXC_RETURN from LR at handler entry
+    uint32_t sp;         // offset 52: Stack pointer at time of fault
+    uint32_t core_id;    // offset 56: SIO CPUID (0=Core0, 1=Core1)
+    uint32_t valid;      // offset 60: set to FAULT_INFO_MAGIC when populated
+} fault_info_t;
+
+static volatile fault_info_t fault_info;
+
+static void fault_led_init(void) {
+    gpio_init(FAULT_LED_PIN);
+    gpio_set_dir(FAULT_LED_PIN, GPIO_OUT);
+    gpio_put(FAULT_LED_PIN, 0);
+}
+
+void __attribute__((used, naked)) isr_hardfault(void) {
+    __asm volatile(
+        ".syntax unified              \n"
+        //
+        // 1. Determine which stack pointer was active (MSP or PSP)
+        //    EXC_RETURN bit 2: 0=MSP, 1=PSP
+        //
+        "tst   lr, #4                 \n"
+        "ite   eq                     \n"
+        "mrseq r0, msp               \n"
+        "mrsne r0, psp               \n"
+        // r0 = pointer to exception frame on faulting stack
+        "mov   r3, lr                 \n"  // save EXC_RETURN
+        //
+        // 2. Load fault_info struct address
+        //
+        "ldr   r1, =fault_info        \n"
+        //
+        // 3. Copy 8-word exception frame {R0..xPSR}
+        //
+        "ldr   r2, [r0, #0]          \n"  // stacked R0
+        "str   r2, [r1, #0]          \n"
+        "ldr   r2, [r0, #4]          \n"  // stacked R1
+        "str   r2, [r1, #4]          \n"
+        "ldr   r2, [r0, #8]          \n"  // stacked R2
+        "str   r2, [r1, #8]          \n"
+        "ldr   r2, [r0, #12]         \n"  // stacked R3
+        "str   r2, [r1, #12]         \n"
+        "ldr   r2, [r0, #16]         \n"  // stacked R12
+        "str   r2, [r1, #16]         \n"
+        "ldr   r2, [r0, #20]         \n"  // stacked LR
+        "str   r2, [r1, #20]         \n"
+        "ldr   r2, [r0, #24]         \n"  // stacked PC (faulting instruction)
+        "str   r2, [r1, #24]         \n"
+        "ldr   r2, [r0, #28]         \n"  // stacked xPSR
+        "str   r2, [r1, #28]         \n"
+        //
+        // 4. Read SCB fault status registers
+        //    CFSR=0xE000ED28, HFSR=+4, MMFAR=+12, BFAR=+16
+        //
+        "ldr   r2, =0xE000ED28       \n"  // SCB CFSR base
+        "ldr   r4, [r2, #0]          \n"  // CFSR
+        "str   r4, [r1, #32]         \n"
+        "ldr   r4, [r2, #4]          \n"  // HFSR
+        "str   r4, [r1, #36]         \n"
+        "ldr   r4, [r2, #12]         \n"  // MMFAR (+0x0C)
+        "str   r4, [r1, #40]         \n"
+        "ldr   r4, [r2, #16]         \n"  // BFAR  (+0x10)
+        "str   r4, [r1, #44]         \n"
+        //
+        // 5. Store EXC_RETURN, SP, core ID
+        //
+        "str   r3, [r1, #48]         \n"  // exc_return
+        "str   r0, [r1, #52]         \n"  // sp (faulting stack)
+        "ldr   r2, =0xd0000000       \n"  // SIO base
+        "ldr   r4, [r2, #0]          \n"  // CPUID: 0=Core0, 1=Core1
+        "str   r4, [r1, #56]         \n"  // core_id
+        //
+        // 6. Set valid flag and barrier
+        //
+        "movw  r4, #0xFA17           \n"
+        "movt  r4, #0xDEAD           \n"  // FAULT_INFO_MAGIC
+        "str   r4, [r1, #60]         \n"
+        "dsb   sy                     \n"  // ensure stores visible to other core
+        //
+        // 7. Blink GPIO 47 forever via raw SIO registers
+        //    gpio_hi_oe_set=+0x34, gpio_hi_togl=+0x2c
+        //    Bit for GPIO47 = 1<<(47-32) = 1<<15 = 0x8000
+        //
+        "ldr   r0, =0xd0000000       \n"  // SIO base
+        "movs  r1, #1                 \n"
+        "lsls  r1, r1, #15           \n"  // 0x8000
+        "str   r1, [r0, #0x34]       \n"  // gpio_hi_oe_set
+        "1:                            \n"
+        "str   r1, [r0, #0x2c]       \n"  // gpio_hi_togl
+        "ldr   r2, =2000000          \n"  // ~200ms at 200MHz
+        "2:                            \n"
+        "subs  r2, r2, #1             \n"
+        "bne   2b                      \n"
+        "b     1b                      \n"
+    );
+}
+
+// Dump captured HardFault info over UART.  Safe to call from Core 0
+// even while Core 1 is stuck in the LED blink loop above.
+static void dump_fault_info(void) {
+    if (fault_info.valid != FAULT_INFO_MAGIC) {
+        printf("No HardFault recorded.\n");
+        return;
+    }
+
+    printf("\n=== HARDFAULT INFO ===\n");
+    printf("Core %lu faulted\n", (unsigned long)fault_info.core_id);
+    printf("PC   = 0x%08lX  (faulting instruction)\n", (unsigned long)fault_info.pc);
+    printf("LR   = 0x%08lX  (return address)\n", (unsigned long)fault_info.lr);
+    printf("SP   = 0x%08lX\n", (unsigned long)fault_info.sp);
+    printf("R0=0x%08lX R1=0x%08lX R2=0x%08lX R3=0x%08lX\n",
+           (unsigned long)fault_info.r0, (unsigned long)fault_info.r1,
+           (unsigned long)fault_info.r2, (unsigned long)fault_info.r3);
+    printf("R12=0x%08lX  xPSR=0x%08lX\n",
+           (unsigned long)fault_info.r12, (unsigned long)fault_info.xpsr);
+    printf("EXC_RETURN=0x%08lX (%s)\n",
+           (unsigned long)fault_info.exc_return,
+           (fault_info.exc_return & 0x4) ? "PSP/Thread" : "MSP/Handler");
+
+    uint32_t cfsr = fault_info.cfsr;
+    printf("CFSR = 0x%08lX\n", (unsigned long)cfsr);
+    // MemManage faults (bits 0-7)
+    if (cfsr & 0x01) printf("  IACCVIOL: Instruction access violation\n");
+    if (cfsr & 0x02) printf("  DACCVIOL: Data access violation\n");
+    if (cfsr & 0x08) printf("  MUNSTKERR: MemManage on unstacking\n");
+    if (cfsr & 0x10) printf("  MSTKERR: MemManage on stacking\n");
+    if (cfsr & 0x80) printf("  MMARVALID: MMFAR = 0x%08lX\n", (unsigned long)fault_info.mmfar);
+    // Bus faults (bits 8-15)
+    if (cfsr & 0x0100) printf("  IBUSERR: Instruction bus error\n");
+    if (cfsr & 0x0200) printf("  PRECISERR: Precise data bus error\n");
+    if (cfsr & 0x0400) printf("  IMPRECISERR: Imprecise data bus error\n");
+    if (cfsr & 0x0800) printf("  UNSTKERR: BusFault on unstacking\n");
+    if (cfsr & 0x1000) printf("  STKERR: BusFault on stacking\n");
+    if (cfsr & 0x8000) printf("  BFARVALID: BFAR = 0x%08lX\n", (unsigned long)fault_info.bfar);
+    // Usage faults (bits 16-31)
+    if (cfsr & 0x010000) printf("  UNDEFINSTR: Undefined instruction\n");
+    if (cfsr & 0x020000) printf("  INVSTATE: Invalid state (Thumb bit)\n");
+    if (cfsr & 0x040000) printf("  INVPC: Invalid PC load\n");
+    if (cfsr & 0x080000) printf("  NOCP: No coprocessor\n");
+    if (cfsr & 0x100000) printf("  STKOF: Stack overflow (ARMv8-M)\n");
+    if (cfsr & 0x01000000) printf("  UNALIGNED: Unaligned access\n");
+    if (cfsr & 0x02000000) printf("  DIVBYZERO: Divide by zero\n");
+
+    printf("HFSR = 0x%08lX", (unsigned long)fault_info.hfsr);
+    if (fault_info.hfsr & (1u << 30)) printf("  FORCED");
+    if (fault_info.hfsr & (1u << 1))  printf("  VECTTBL");
+    printf("\n");
+
+    printf("=== END HARDFAULT INFO ===\n\n");
+}
 
 static void print_uart_help(void) {
     printf("\nUART commands:\n");
     printf("  h/? : show this help\n");
     printf("  t   : dump SASI trace to UART\n");
+#ifdef VERIFY_DMA_WRITES
+    printf("  r   : dump DMA CRC trace (per-sector CRC-8)\n");
+#endif
     printf("  f   : force SASI_LOG.TXT flush now\n");
     printf("  a   : toggle automatic log flush\n");
     printf("  p   : PIO0 state + XACK/EXTIO/CLK5/READY pin dump\n");
     printf("  i   : fast IRQ DATA transition trace dump\n");
+    printf("  c   : dump HardFault crash info (if captured)\n");
     printf("\n");
 }
 
@@ -115,6 +319,27 @@ static void dump_pio0_and_pin_state(void) {
            !!(ir4_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS),
            dma_registers.state.interrupt_pending);
 
+    // HOLD/HLDA pin state (DMA bus mastering)
+    uint32_t hold_status = io_bank0_hw->io[HOLD_PIN].status;
+    printf("HOLD  (GPIO%d): OE=%d OUT=%d PAD=%d  func=%lu\n",
+           HOLD_PIN,
+           !!(hold_status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS),
+           !!(hold_status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS),
+           !!(hold_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS),
+           (unsigned long)(io_bank0_hw->io[HOLD_PIN].ctrl & 0x1f));
+    uint32_t hlda_status = io_bank0_hw->io[HLDA_PIN].status;
+    printf("HLDA  (GPIO%d): PAD=%d\n",
+           HLDA_PIN,
+           !!(hlda_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS));
+
+    // PIO1 (DMA master) SM0 state
+    printf("DMA SM (PIO%d SM%d): enabled=%d  PC=0x%02x  TX=%d/4  RX=%d/4\n",
+           pio_get_index(PIO_DMA_MASTER), DMA_SM_CONTROL,
+           pio_sm_is_claimed(PIO_DMA_MASTER, DMA_SM_CONTROL),
+           pio_sm_get_pc(PIO_DMA_MASTER, DMA_SM_CONTROL),
+           pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL),
+           pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL));
+
     // SASI bus state
     printf("bus_ctrl=0x%02X (BSY:%d REQ:%d CTL:%d INP:%d MSG:%d)\n",
            dma_registers.bus_ctrl,
@@ -154,6 +379,27 @@ static void dump_pio0_and_pin_state(void) {
            (unsigned long)sasi_cmd_over_4s_count);
     printf("RESET count: %lu\n", (unsigned long)sasi_reset_count);
 
+    // Per-operation timing breakdown
+    printf("Op timing (max us): obtain=%lu  sd_rd=%lu  sd_wr=%lu  dma_rd=%lu  dma_wr=%lu  sync=%lu  verify=%lu\n",
+           (unsigned long)sasi_op_timing.max_obtain_us,
+           (unsigned long)sasi_op_timing.max_sd_read_us,
+           (unsigned long)sasi_op_timing.max_sd_write_us,
+           (unsigned long)sasi_op_timing.max_dma_read_us,
+           (unsigned long)sasi_op_timing.max_dma_write_us,
+           (unsigned long)sasi_op_timing.max_sync_us,
+           (unsigned long)sasi_op_timing.max_verify_us);
+    if (sasi_op_timing.stall_count > 0) {
+        static const char *op_names[] = { "?", "dma_rd", "dma_wr", "sd_rd", "sd_wr", "sync", "verify", "obtain" };
+        uint32_t op = sasi_op_timing.stall_last_op;
+        printf("Stalls (>100ms): count=%lu  last=%s %lu us @ LBA %lu\n",
+               (unsigned long)sasi_op_timing.stall_count,
+               (op <= SASI_OP_OBTAIN) ? op_names[op] : "?",
+               (unsigned long)sasi_op_timing.stall_last_us,
+               (unsigned long)sasi_op_timing.stall_last_lba);
+    } else {
+        printf("Stalls (>100ms): 0\n");
+    }
+
     // Core 1 liveness
     uint64_t now = time_us_64();
     uint64_t last_proc = defer_last_process_us;
@@ -162,6 +408,39 @@ static void dump_pio0_and_pin_state(void) {
            (unsigned long long)defer_age_us,
            (unsigned long)defer_queue.head,
            (unsigned long)defer_queue.tail);
+
+    // Stack canary status
+    uint32_t canary_intact = stack_canary_check();
+    printf("Core1 stack canary: %lu/%lu intact%s\n",
+           (unsigned long)canary_intact, (unsigned long)STACK_CANARY_WORDS,
+           (canary_intact < STACK_CANARY_WORDS) ? " *** OVERFLOW DETECTED ***" : "");
+
+#ifdef VERIFY_DMA_WRITES
+    printf("DMA verify: checked=%lu  errors=%lu  byte_mismatches=%lu\n",
+           (unsigned long)dma_verify_stats.sectors_checked,
+           (unsigned long)dma_verify_stats.sectors_failed,
+           (unsigned long)dma_verify_stats.total_byte_mismatches);
+    if (dma_verify_stats.first_error_recorded) {
+        printf("  first_err: LBA=%lu addr=0x%05lX offset=%u exp=0x%02X got=0x%02X\n",
+               (unsigned long)dma_verify_stats.first_err_lba,
+               (unsigned long)dma_verify_stats.first_err_addr,
+               dma_verify_stats.first_err_offset,
+               dma_verify_stats.first_err_expected,
+               dma_verify_stats.first_err_actual);
+    }
+    printf("DMA CRC trace: %lu sectors recorded (R=%s, W=%s), use 'r' to dump\n",
+           (unsigned long)dma_crc_trace.total,
+           "disk->Victor", "Victor->disk");
+#endif
+
+    // HardFault info (if captured)
+    if (fault_info.valid == FAULT_INFO_MAGIC) {
+        printf("*** HARDFAULT on Core %lu: PC=0x%08lX LR=0x%08lX CFSR=0x%08lX ***\n",
+               (unsigned long)fault_info.core_id,
+               (unsigned long)fault_info.pc,
+               (unsigned long)fault_info.lr,
+               (unsigned long)fault_info.cfsr);
+    }
 
     printf("=== END PIO0 STATE ===\n\n");
 }
@@ -185,6 +464,12 @@ static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
             printf("\nUART: dumping SASI trace\n");
             sasi_trace_dump();
             break;
+#ifdef VERIFY_DMA_WRITES
+        case 'r':
+            printf("\nUART: dumping DMA CRC trace\n");
+            dma_crc_trace_dump();
+            break;
+#endif
         case 'f':
             printf("\nUART: forcing SASI log flush\n");
             sasi_log_flush_now();
@@ -199,6 +484,9 @@ static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
             break;
         case 'i':
             register_irq_trace_dump("UART request");
+            break;
+        case 'c':
+            dump_fault_info();
             break;
         default:
             printf("\nUART: unknown command '%c' (0x%02X). Press 'h' for help.\n",
@@ -233,6 +521,7 @@ void initialize_uart() {
     set_sys_clock_khz(200000, true);
     stdio_init_all();
     initialize_uart();
+    fault_led_init();
 
     queue_init(&log_queue, sizeof(char[256]), 32); // 32 message buffer
 
@@ -316,7 +605,14 @@ void initialize_uart() {
      
     dma_device_reset(&dma_registers);
     sasi_trace_init();  // Initialize diagnostic trace buffer
+    sasi_op_timing_init();  // Initialize per-operation timing breakdown
+#ifdef VERIFY_DMA_WRITES
+    dma_crc_trace_init();
+#endif
     printf("DMA device reset complete\n");
+
+    // Paint Core 1 stack with canary pattern BEFORE launch.
+    stack_canary_init();
 
     // Launch core 1 only after both PIO state machines and reset state are stable.
     // This avoids cross-core races where core1 cache warmup touches PIO1 SM0 while
@@ -335,6 +631,8 @@ void initialize_uart() {
     uint32_t last_isr_calls = 0;
     uint64_t last_defer_check_us = time_us_64();
     bool stuck_already_reported = false;
+    bool stack_overflow_reported = false;
+    bool fault_info_dumped = false;
 
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
@@ -370,6 +668,17 @@ void initialize_uart() {
             // Reset stuck flag if Core 1 resumes processing
             if (current_processed != last_defer_processed) {
                 stuck_already_reported = false;
+            }
+
+            // Stack canary check (runs every ~100ms, very cheap)
+            if (!stack_overflow_reported) {
+                uint32_t canary_intact = stack_canary_check();
+                if (canary_intact < STACK_CANARY_WORDS) {
+                    printf("\n!!! CORE1 STACK OVERFLOW: canary %lu/%lu intact !!!\n",
+                           (unsigned long)canary_intact, (unsigned long)STACK_CANARY_WORDS);
+                    dump_pio0_and_pin_state();
+                    stack_overflow_reported = true;
+                }
             }
 
             last_defer_processed = current_processed;

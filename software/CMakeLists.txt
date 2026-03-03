@@ -73,6 +73,8 @@ target_compile_definitions(dma_board PRIVATE
     PICO_CORE1_STACK_SIZE=0
     USE_SD_STORAGE=1
     SD_DISK_IMAGE="victor.img"
+    # Uncomment to enable DMA write verification (adds ~2x overhead to writes)
+    VERIFY_DMA_WRITES=0
 )
 
 # Generate PIO headers for cached version
@@ -103,6 +105,17 @@ target_link_libraries(dma_board
         hardware_dma
         no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
         )
+
+# Disable the FatFS library's ARM HardFault handler (crash.c) so we can
+# provide our own LED-blink handler in dma_board.c.  The library's handler
+# tries to save crash info to RAM and reboot, which fails when the stack is
+# corrupted — causing a double fault and total lockup.  Compiling crash.c
+# with PICO_RISCV=1 skips the #if !PICO_RISCV block that defines
+# isr_hardfault / Hardfault_HandlerC, while keeping capture_assert() etc.
+set_source_files_properties(
+    ${NO_OS_FATFS_PATH}/src/crash.c
+    PROPERTIES COMPILE_DEFINITIONS "PICO_RISCV=1"
+)
 
 pico_add_extra_outputs(dma_board)
 

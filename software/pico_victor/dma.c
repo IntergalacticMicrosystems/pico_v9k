@@ -572,7 +572,10 @@ static inline void setup_pins_register_inputs() {
     // Switch control + remaining pin functions to register PIO.
     // XACK(26) and EXTIO(27) are register SM side-set pins and must
     // be on PIO0's function for the register SM to drive them.
+    // Skip HOLD(25) and HLDA(29) — they are DMA-master-only pins
+    // controlled via SIO GPIO, not used by the register SM.
     for (int pin = RD_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        if (pin == HOLD_PIN || pin == HLDA_PIN) continue;
         gpio_set_function(pin, reg_function);
     }
 
@@ -638,7 +641,8 @@ static void abort_dma_transfer(void) {
     setup_pins_register_inputs();
     reset_register_pio_sm();
 
-    // Release HOLD so 8088 can resume
+    // Release HOLD after bus is fully restored.  HOLD stays on SIO
+    // (skipped in setup_pins_register_inputs), so this works correctly.
     gpio_set_dir(HOLD_PIN, GPIO_IN);
 }
 
@@ -674,12 +678,16 @@ static inline bool obtain_dma_master() {
 }
 
 static inline bool start_dma_control() {
+    uint64_t t0_obtain = time_us_64();
     if (!obtain_dma_master()) {
         sasi_log_dma_error(DMA_ERR_MASTER_FAIL,
                            dma_registers.dma_address.full,
                            dma_registers.bus_ctrl);
         return false;
     }
+    uint32_t obtain_elapsed = (uint32_t)(time_us_64() - t0_obtain);
+    sasi_op_record(obtain_elapsed, &sasi_op_timing.max_obtain_us,
+                   SASI_OP_OBTAIN, dma_registers.dma_address.full >> 9);
     // Release XACK/EXTIO pindirs before disabling register SM.
     // If the SM is mid-cycle with side S_XACK asserted, the frozen pindirs
     // would hold XACK low -> READY low -> DMA PIO hangs at wait READY.
@@ -718,6 +726,9 @@ static inline void release_dma_master() {
         tight_loop_contents();
     }
 
+    // Release HOLD after bus is fully restored.  HOLD/HLDA stay on SIO
+    // function (skipped in setup_pins_register_inputs), so gpio_set_dir
+    // correctly operates on the SIO direction register.
     gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD/ is open drain on Victor
 }
 
@@ -884,6 +895,46 @@ bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
     return true;
 }
+
+#ifdef VERIFY_DMA_WRITES
+dma_verify_stats_t dma_verify_stats;
+
+int dma_verify_victor_ram(uint32_t victor_addr, const uint8_t *expected, uint32_t len, uint32_t lba) {
+    uint8_t readback[512];
+    if (len > sizeof(readback)) len = sizeof(readback);
+
+    if (!dma_read_from_victor_ram(readback, len, victor_addr)) {
+        dma_verify_stats.sectors_checked++;
+        dma_verify_stats.sectors_failed++;
+        return -1;
+    }
+
+    int mismatches = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (readback[i] != expected[i]) {
+            mismatches++;
+            dma_verify_stats.total_byte_mismatches++;
+
+            if (!dma_verify_stats.first_error_recorded) {
+                dma_verify_stats.first_error_recorded = true;
+                dma_verify_stats.first_err_lba = lba;
+                dma_verify_stats.first_err_addr = (victor_addr + i) & 0xFFFFF;
+                dma_verify_stats.first_err_offset = (uint16_t)i;
+                dma_verify_stats.first_err_expected = expected[i];
+                dma_verify_stats.first_err_actual = readback[i];
+            }
+        }
+    }
+
+    dma_verify_stats.sectors_checked++;
+    if (mismatches > 0) {
+        dma_verify_stats.sectors_failed++;
+    }
+
+    return mismatches;
+}
+#endif // VERIFY_DMA_WRITES
+
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];

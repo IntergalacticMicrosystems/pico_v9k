@@ -50,11 +50,18 @@
 #define SASI_DMA_SECTOR_RETRIES  8
 #define SASI_DMA_RETRY_WAIT_US   25
 
+// Per-operation timing breakdown
+sasi_op_timing_t sasi_op_timing;
+
+void sasi_op_timing_init(void) {
+    memset((void *)&sasi_op_timing, 0, sizeof(sasi_op_timing));
+}
+
 // Forward declarations for internal helpers
 static void signal_command_complete_with_status(dma_registers_t *dma, uint8_t status_byte);
 static void signal_dma_failure_status(dma_registers_t *dma);
 
-#if SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY
+#if SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY || defined(VERIFY_DMA_WRITES)
 /*
  * CRC-8 calculation using polynomial 0x07 (x^8 + x^2 + x + 1)
  * Used for verifying DMA transfers during testing.
@@ -73,7 +80,53 @@ static uint8_t sasi_crc8(const uint8_t *data, uint16_t len) {
     }
     return crc;
 }
-#endif
+#endif // SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY || VERIFY_DMA_WRITES
+
+#ifdef VERIFY_DMA_WRITES
+dma_crc_trace_t dma_crc_trace;
+
+void dma_crc_trace_init(void) {
+    memset(&dma_crc_trace, 0, sizeof(dma_crc_trace));
+}
+
+void dma_crc_trace_record(uint32_t lba, uint32_t dma_addr,
+                          const uint8_t *data, uint16_t len, uint8_t direction) {
+    uint32_t idx = dma_crc_trace.head & (DMA_CRC_TRACE_SIZE - 1);
+    dma_crc_trace.entries[idx].lba = lba;
+    dma_crc_trace.entries[idx].dma_addr = dma_addr & 0xFFFFF;
+    dma_crc_trace.entries[idx].crc8 = sasi_crc8(data, len);
+    dma_crc_trace.entries[idx].direction = direction;
+    dma_crc_trace.entries[idx].first_byte = data[0];
+    dma_crc_trace.entries[idx].last_byte = (len > 0) ? data[len - 1] : 0;
+    dma_crc_trace.head++;
+    dma_crc_trace.total++;
+}
+
+void dma_crc_trace_dump(void) {
+    uint32_t count = (dma_crc_trace.head >= DMA_CRC_TRACE_SIZE)
+                     ? DMA_CRC_TRACE_SIZE : dma_crc_trace.head;
+    uint32_t start = (dma_crc_trace.head >= DMA_CRC_TRACE_SIZE)
+                     ? dma_crc_trace.head - DMA_CRC_TRACE_SIZE : 0;
+
+    printf("\n=== DMA CRC TRACE (total=%lu, showing last %lu) ===\n",
+           (unsigned long)dma_crc_trace.total, (unsigned long)count);
+    printf("LBA      Addr    Dir CRC  First Last\n");
+    printf("-------  ------  --- ---  ----- ----\n");
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start + i) & (DMA_CRC_TRACE_SIZE - 1);
+        dma_crc_entry_t *e = &dma_crc_trace.entries[idx];
+        printf("%7lu  %05lX   %c   %02X   %02X    %02X\n",
+               (unsigned long)e->lba,
+               (unsigned long)e->dma_addr,
+               e->direction,
+               e->crc8,
+               e->first_byte,
+               e->last_byte);
+    }
+    printf("=== END DMA CRC TRACE ===\n\n");
+}
+#endif // VERIFY_DMA_WRITES
 
 #if SASI_DMA_READ_VERIFY
 /*
@@ -508,11 +561,20 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         uint8_t sector_data[512];
+        uint64_t t0 = time_us_64();
         bool storage_read_ok = read_sector_from_disk(dma, sector + i, sector_data);
+        uint32_t sd_read_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(sd_read_elapsed, &sasi_op_timing.max_sd_read_us,
+                       SASI_OP_SD_READ, sector + i);
         if (!storage_read_ok) {
             transfer_ok = false;
             break;
         }
+
+#ifdef VERIFY_DMA_WRITES
+        // Record CRC of data read from storage (before DMA write to Victor)
+        dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'R');
+#endif
 
         // Switch to DATA IN just before DMA transfer
         dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT);
@@ -522,6 +584,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // DMA transfer to system RAM with retry loop
         bool dma_transfer_ok = false;
+        t0 = time_us_64();
         for (int attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
             if (dma_write_to_victor_ram(sector_data, 512, local_dma_addr)) {
                 dma_transfer_ok = true;
@@ -531,6 +594,9 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 sleep_us(SASI_DMA_RETRY_WAIT_US);
             }
         }
+        uint32_t dma_wr_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(dma_wr_elapsed, &sasi_op_timing.max_dma_write_us,
+                       SASI_OP_DMA_WRITE, sector + i);
 
         if (!dma_transfer_ok) {
             transfer_ok = false;
@@ -538,6 +604,31 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
                              (uint8_t)(local_dma_addr & 0xFF));
             break;
         }
+
+#ifdef VERIFY_DMA_WRITES
+        // Read-after-write verification: read back the sector we just wrote
+        // and compare byte-by-byte to catch bus timing corruption.
+        {
+            t0 = time_us_64();
+            int mismatches = dma_verify_victor_ram(local_dma_addr, sector_data, 512, sector + i);
+            uint32_t verify_elapsed = (uint32_t)(time_us_64() - t0);
+            sasi_op_record(verify_elapsed, &sasi_op_timing.max_verify_us,
+                           SASI_OP_VERIFY, sector + i);
+            if (mismatches > 0) {
+                printf("VERIFY FAIL: LBA %lu addr=%05lX mismatches=%d first_err: off=%u exp=0x%02X got=0x%02X\n",
+                       (unsigned long)(sector + i),
+                       (unsigned long)local_dma_addr,
+                       mismatches,
+                       dma_verify_stats.first_err_offset,
+                       dma_verify_stats.first_err_expected,
+                       dma_verify_stats.first_err_actual);
+            } else if (mismatches < 0) {
+                printf("VERIFY DMA READ FAIL: LBA %lu addr=%05lX\n",
+                       (unsigned long)(sector + i),
+                       (unsigned long)local_dma_addr);
+            }
+        }
+#endif // VERIFY_DMA_WRITES
 
         // Auto-increment local DMA address
         local_dma_addr = (local_dma_addr + 512) & 0x000FFFFF;
@@ -686,6 +777,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // DMA read from Victor RAM with retry loop
         bool dma_transfer_ok = false;
+        uint64_t t0 = time_us_64();
         for (int attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
             if (dma_read_from_victor_ram(sector_data, 512, local_dma_addr)) {
                 dma_transfer_ok = true;
@@ -695,6 +787,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 sleep_us(SASI_DMA_RETRY_WAIT_US);
             }
         }
+        uint32_t dma_rd_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(dma_rd_elapsed, &sasi_op_timing.max_dma_read_us,
+                       SASI_OP_DMA_READ, sector + i);
 
         if (!dma_transfer_ok) {
             transfer_ok = false;
@@ -704,6 +799,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         __dmb();  // Ensure DMA data is visible before writing to storage
+
+#ifdef VERIFY_DMA_WRITES
+        // Record CRC of data read from Victor RAM (before writing to storage)
+        dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'W');
+#endif
 
 #if SASI_DMA_READ_VERIFY
         // Verify DMA read against expected test pattern (for dma_verify.c round-trip test)
@@ -724,6 +824,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // Write to storage BEFORE incrementing address (write-then-advance)
         bool storage_write_ok = false;
+        t0 = time_us_64();
         if (storage_is_mounted(target)) {
             storage_write_ok = storage_write_sector(target, sector + i, sector_data, 512);
             if (storage_write_ok) {
@@ -741,6 +842,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 }
             }
         }
+        uint32_t sd_wr_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(sd_wr_elapsed, &sasi_op_timing.max_sd_write_us,
+                       SASI_OP_SD_WRITE, sector + i);
 
         if (!storage_write_ok) {
             transfer_ok = false;
@@ -783,11 +887,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // CRITICAL: check return value -- if sync fails the data never reached
     // the SD card and we must report CHECK_CONDITION to DOS.
     if (any_storage_writes && transfer_ok && storage_is_mounted(target)) {
+        uint64_t t_sync = time_us_64();
         if (!storage_sync(target)) {
             transfer_ok = false;
             sasi_trace_event(TRACE_DMA_RESULT, 3, completed_blocks,
                              dma ? dma->bus_ctrl : 0);
         }
+        uint32_t sync_elapsed = (uint32_t)(time_us_64() - t_sync);
+        sasi_op_record(sync_elapsed, &sasi_op_timing.max_sync_us,
+                       SASI_OP_SYNC, sector);
     }
 
     if (dma) {
