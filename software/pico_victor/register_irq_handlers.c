@@ -478,7 +478,11 @@ void __time_critical_func(register_read_irq_isr)() {
                     }
                 }
 
-                if (valid_offset) {
+                if (valid_offset && masked_offset != REG_DATA) {
+                    // Skip REG_DATA: host DATA writes are command bytes that must
+                    // NOT leak into the DATA cache.  The DATA cache holds target→host
+                    // values (status/message bytes) set by cached_set_data() and
+                    // phase-aware PREFETCH logic.
                     cached->values[masked_offset] = data;
                     if (masked_offset == REG_STATUS) {
                         cached->values[0x30] = data;

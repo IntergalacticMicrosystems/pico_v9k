@@ -97,4 +97,16 @@ extern volatile uint64_t defer_last_process_us;
 extern defer_queue_t defer_queue;
 extern cached_registers_t cached_regs;
 
+// Atomically update bus_ctrl and cache to prevent ISR from serving stale phase.
+// Updates cache BEFORE bus_ctrl so the ISR always sees the correct phase even
+// if it preempts between the two writes (both run on Core 1).
+static inline void sasi_bus_ctrl_set(dma_registers_t *dma, uint8_t new_bus_ctrl) {
+    uint8_t s = new_bus_ctrl & (SASI_INP_BIT | SASI_CTL_BIT | SASI_BSY_BIT | SASI_REQ_BIT | SASI_MSG_BIT);
+    cached_regs.values[REG_STATUS] = s;
+    cached_regs.values[0x30] = s;
+    __asm volatile("dmb" ::: "memory");
+    dma->bus_ctrl = new_bus_ctrl;
+    __asm volatile("dmb" ::: "memory");
+}
+
 #endif // DMA_DEFER_H

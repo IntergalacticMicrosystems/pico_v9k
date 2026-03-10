@@ -711,19 +711,43 @@ static inline void release_dma_master() {
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     setup_pins_register_inputs();
 
+    // Diagnostic: capture PIO0 pad state after pin handoff but before SM restart.
+    // If PIO0 has stale pindirs from a previous cycle, dbg_padoe will show
+    // unexpected output-enable bits on the bus.
+    uint32_t padoe_before_reset = PIO_REGISTERS->dbg_padoe;
+    uint32_t padout_before_reset = PIO_REGISTERS->dbg_padout;
+
     // Safe restart guarantees XACK/EXTIO are released and SM starts at T0.
     reset_register_pio_sm();
 
+    if (padoe_before_reset != 0) {
+        fast_log("DMA release: PIO0 padoe=0x%08x padout=0x%08x before SM reset\n",
+                 padoe_before_reset, padout_before_reset);
+    }
+
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
     // Timeout protects against Victor clock stopping during release.
+    bool clk5_timeout = false;
     absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
     while (gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) {
+            clk5_timeout = true;
+            break;
+        }
         tight_loop_contents();
     }
-    while (!gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
-        tight_loop_contents();
+    if (!clk5_timeout) {
+        while (!gpio_get(CLOCK_5_PIN)) {
+            if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) {
+                clk5_timeout = true;
+                break;
+            }
+            tight_loop_contents();
+        }
+    }
+
+    if (clk5_timeout) {
+        fast_log("DMA release: CLK5 sync TIMEOUT during bus release\n");
     }
 
     // Release HOLD after bus is fully restored.  HOLD/HLDA stay on SIO

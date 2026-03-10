@@ -267,8 +267,9 @@ static void dump_pio0_and_pin_state(void) {
     uint sm = REG_SM_CONTROL;
 
     printf("\n=== PIO0 SM0 STATE ===\n");
+    bool reg_sm_running = (pio->ctrl & (1u << sm)) != 0;
     printf("enabled=%d  stalled=%d  PC=0x%02x\n",
-           pio_sm_is_claimed(pio, sm),
+           reg_sm_running,
            pio_sm_is_exec_stalled(pio, sm),
            pio_sm_get_pc(pio, sm));
     printf("RX FIFO=%d/4  TX FIFO=%d/4\n",
@@ -333,9 +334,10 @@ static void dump_pio0_and_pin_state(void) {
            !!(hlda_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS));
 
     // PIO1 (DMA master) SM0 state
+    bool dma_sm_running = (PIO_DMA_MASTER->ctrl & (1u << DMA_SM_CONTROL)) != 0;
     printf("DMA SM (PIO%d SM%d): enabled=%d  PC=0x%02x  TX=%d/4  RX=%d/4\n",
            pio_get_index(PIO_DMA_MASTER), DMA_SM_CONTROL,
-           pio_sm_is_claimed(PIO_DMA_MASTER, DMA_SM_CONTROL),
+           dma_sm_running,
            pio_sm_get_pc(PIO_DMA_MASTER, DMA_SM_CONTROL),
            pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL),
            pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL));
@@ -651,6 +653,7 @@ void initialize_uart() {
             uint32_t current_isr_calls = isr_call_count;
 
             if (storage_ready &&
+                !sasi_in_dma_transfer &&
                 current_processed == last_defer_processed &&
                 current_isr_calls > last_isr_calls + 1000 &&
                 !stuck_already_reported) {

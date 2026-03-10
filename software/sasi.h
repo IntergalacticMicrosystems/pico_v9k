@@ -95,6 +95,9 @@ extern volatile uint32_t sasi_max_cmd_us;
 extern volatile uint32_t sasi_cmd_over_1s_count;
 extern volatile uint32_t sasi_cmd_over_4s_count;
 
+// Set by Core 1 during DMA transfers so Core 0 stuck detector doesn't false-fire.
+extern volatile bool sasi_in_dma_transfer;
+
 // Per-operation timing breakdown within sector loops.
 // Tracks max duration of each step so we can identify stall sources.
 typedef struct {

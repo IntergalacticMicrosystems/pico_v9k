@@ -156,6 +156,9 @@ volatile uint32_t sasi_max_cmd_us = 0;
 volatile uint32_t sasi_cmd_over_1s_count = 0;
 volatile uint32_t sasi_cmd_over_4s_count = 0;
 
+// DMA transfer in progress flag — read by Core 0 stuck detector
+volatile bool sasi_in_dma_transfer = false;
+
 // SASI command state - file-scope so it can be reset on device reset
 static uint8_t sasi_command_buffer[16];
 static int sasi_cmd_index = 0;
@@ -234,10 +237,11 @@ static void sasi_apply_command_delay(dma_registers_t *dma) {
     }
 
     // Hold command phase busy (BSY|CTL, no REQ) while the controller "executes".
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     sleep_us(SASI_COMMAND_DELAY_US);
 }
@@ -246,14 +250,12 @@ static void sasi_request_cmd_byte(dma_registers_t *dma) {
     // Controller requests next command byte: BSY|REQ|CTL, I/O=0 (host->dev)
     uint8_t before = dma->bus_ctrl;
     // Drop ACK between bytes and ensure we're in command phase.
-    dma->bus_ctrl &= ~(SASI_ACK_BIT | SASI_MSG_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl &= ~SASI_INP_BIT; // host -> controller
-    __dmb();  // Ensure bus_ctrl update is complete
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl to prevent
+    // ISR from serving stale phase if it preempts between the two writes.
+    uint8_t new_ctrl = (before & ~(SASI_ACK_BIT | SASI_MSG_BIT | SASI_INP_BIT))
+                       | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
     dma->state.non_dma_req = 1;
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    sasi_bus_ctrl_set(dma, new_ctrl);
     dma_update_interrupts(dma, true);
     sasi_fastlog("SASI: request_cmd_byte done, bus_ctrl 0x%02X->0x%02X\n", before, dma->bus_ctrl);
 }
@@ -273,16 +275,15 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
 
     dma->status = status_byte;
     cached_set_data(status_byte);
-    dma->bus_ctrl &= ~SASI_ACK_BIT;
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
-    dma->bus_ctrl &= ~SASI_MSG_BIT;
-    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
     dma->state.status_pending = 1;  // Mark that we're waiting for host to read status
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    // Host polls immediately after seeing IR4 - cache must be ready.
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl to prevent
+    // ISR from serving stale phase if it preempts between the two writes.
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_ACK_BIT | SASI_MSG_BIT))
+                           | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
     dma_update_interrupts(dma, true);
     sasi_fastlog("SASI: status phase ready, bus_ctrl=0x%02X, irq_pend=%d\n",
              dma->bus_ctrl, dma->state.interrupt_pending);
@@ -292,24 +293,26 @@ static void sasi_enter_message_phase(dma_registers_t *dma) {
     // Move to message in: BSY|REQ|CTL|INP|MSG (single 0x00 completion message)
     sasi_trace_event(TRACE_MSG_PHASE, 0x00, 0, dma ? dma->bus_ctrl : 0);
     cached_set_data(0x00);
-    dma->bus_ctrl &= ~SASI_ACK_BIT;
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl.
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~SASI_ACK_BIT)
+                           | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
     dma_update_interrupts(dma, true);
 }
 
 static void sasi_release_bus(dma_registers_t *dma) {
     // Drop REQ/BSY and clear control lines to idle
     sasi_trace_event(TRACE_BUS_FREE, 0, 0, dma ? dma->bus_ctrl : 0);
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl cleared
-    dma_update_interrupts(dma, false);
-    cached_status_sync_from_bus(dma);
+    // Cache-first: clear DATA cache and status before bus_ctrl update.
     cached_set_data(0x00);  // Avoid stale DATA reads after bus free
+    {
+        uint8_t new_ctrl = dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
+    dma_update_interrupts(dma, false);
 }
 
 void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
@@ -349,10 +352,11 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             if (dma && dma->state.dma_enabled) {
                 uint8_t params[8];
                 // Enter DATA OUT phase: BSY asserted, CTL=0, INP=0.
-                dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-                dma->bus_ctrl |= SASI_BSY_BIT;
-                __dmb();
-                cached_status_sync_from_bus(dma);
+                {
+                    uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                                       | SASI_BSY_BIT;
+                    sasi_bus_ctrl_set(dma, new_ctrl);
+                }
 
                 // Read parameter bytes from Victor RAM via DMA.
                 uint32_t init_addr = dma->dma_address.full & 0x000FFFFF;
@@ -369,11 +373,12 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
                 // Non-DMA path: request 8 data-out bytes via DATA register.
                 dma->buffer.index = 0;
                 dma->state.data_out_expected = 8;
-                dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-                dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
-                __dmb();
-                dma->state.non_dma_req = 1;
-                cached_status_sync_from_bus(dma);
+                {
+                    uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                                       | (SASI_BSY_BIT | SASI_REQ_BIT);
+                    dma->state.non_dma_req = 1;
+                    sasi_bus_ctrl_set(dma, new_ctrl);
+                }
                 dma_update_interrupts(dma, true);
             } else {
                 signal_command_complete(dma);
@@ -484,11 +489,12 @@ bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte) {
 
     if (dma->state.data_out_expected > 0) {
         // More bytes expected - request next byte (data-out phase: BSY|REQ, CTL=0, INP=0)
-        dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
-        __dmb();
-        dma->state.non_dma_req = 1;
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_REQ_BIT);
+            dma->state.non_dma_req = 1;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
         dma_update_interrupts(dma, true);
         return true;
     }
@@ -528,10 +534,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     sasi_apply_command_delay(dma);
 
     // During command processing, reflect COMMAND busy (BSY|CTL) like MAME traces.
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     // Snapshot the DMA address into a local variable.  Core 0's ISR writes
     // individual bytes to dma->dma_address.bytes.* (address register updates),
@@ -554,6 +561,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint16_t completed_blocks = 0;
     bool transfer_ok = true;
 
+    sasi_in_dma_transfer = true;
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
         if (dma->reset_requested) {
@@ -577,10 +585,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 #endif
 
         // Switch to DATA IN just before DMA transfer
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
-        __dmb();
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_INP_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // DMA transfer to system RAM with retry loop
         bool dma_transfer_ok = false;
@@ -642,12 +651,12 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
-            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-            __dmb();
-            cached_status_sync_from_bus(dma);
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_CTL_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
         }
     }
+    sasi_in_dma_transfer = false;
 
     // If host reset during the loop, skip status — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
@@ -742,10 +751,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     sasi_apply_command_delay(dma);
 
     // During command processing, reflect COMMAND busy (BSY|CTL).
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
 
@@ -762,6 +772,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     bool transfer_ok = true;
     bool any_storage_writes = false;
 
+    sasi_in_dma_transfer = true;
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
         if (dma->reset_requested) {
@@ -770,10 +781,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         uint8_t sector_data[512];
         // Switch to DATA OUT just before DMA read from Victor RAM
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= SASI_BSY_BIT;
-        __dmb();
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | SASI_BSY_BIT;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // DMA read from Victor RAM with retry loop
         bool dma_transfer_ok = false;
@@ -865,12 +877,12 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
-            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-            __dmb();
-            cached_status_sync_from_bus(dma);
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_CTL_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
         }
     }
+    sasi_in_dma_transfer = false;
 
     // If host reset during the loop, skip status/sync — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
@@ -955,10 +967,11 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
     sasi_printf("SASI: Request Sense, transferring %d bytes\n", size);
 
     // Enter Data-In phase: BSY asserted, I/O high (device->host), C/D low
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);  // INP=1 for data-in
-    __dmb();
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT))
+                           | (SASI_BSY_BIT | SASI_INP_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     // Transfer sense data to host via DMA
     uint32_t sense_addr = dma->dma_address.full & 0x000FFFFF;
@@ -980,11 +993,11 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         if (param_len > sizeof(params)) param_len = sizeof(params);
 
         // Data-out phase: BSY asserted, I/O low, C/D low
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-        dma->bus_ctrl |= SASI_BSY_BIT;
-        dma->bus_ctrl &= ~SASI_INP_BIT;
-        __dmb();  // Ensure Core 0 sees bus_ctrl update
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT))
+                               | SASI_BSY_BIT;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // Read parameter list from Victor RAM (ignore content for now)
         uint32_t mode_addr = dma->dma_address.full & 0x000FFFFF;
