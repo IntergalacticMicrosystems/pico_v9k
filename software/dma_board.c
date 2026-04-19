@@ -553,7 +553,7 @@ void initialize_uart() {
     print_uart_help();
 
     //configure GPIO pulls and output strenght/skew etc
-    ontime_pin_setup();
+    one_time_pin_setup();
     
     // configure the board_registers PIO, which controls the DMA board registers which 
     // house control & meta data about the SASI bus
