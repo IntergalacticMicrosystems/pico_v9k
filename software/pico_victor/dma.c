@@ -436,7 +436,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 void ontime_pin_setup() {
     //setup pin basics like enable pulls and set slew rate
     for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         gpio_pull_down(pin); // enable pull-downs
         gpio_put(pin, 0);  // by default drive low
