@@ -60,6 +60,7 @@
 
 #define UART_TX_PIN 0
 #define UART_RX_PIN_NUM 33  // UART RX pin (shared with IR_5 alternate use)
+#define ALE_CURRENT_SINK_PIN 46
 #define DEBUG_PIN 47
 
 // UART configuration (shared across files)
@@ -265,7 +266,7 @@ typedef enum {
     SASI_ACK_BIT = 0x40
 } sasi_status_bits_t;
 
-void ontime_pin_setup();
+void one_time_pin_setup();
 void debug_dump_pin(uint pin);
 void pio_debug_state();
 void core1_main();
@@ -297,6 +298,26 @@ void dma_handle_sasi_req(dma_registers_t *dma);
 void enable_dma_read_irq(void);
 void disable_dma_read_irq(void);
 
+
+#ifdef VERIFY_DMA_WRITES
+typedef struct {
+    uint32_t sectors_checked;
+    uint32_t sectors_failed;
+    uint32_t total_byte_mismatches;
+    bool first_error_recorded;
+    uint32_t first_err_lba;
+    uint32_t first_err_addr;
+    uint16_t first_err_offset;
+    uint8_t first_err_expected;
+    uint8_t first_err_actual;
+} dma_verify_stats_t;
+
+extern dma_verify_stats_t dma_verify_stats;
+
+// Read back data from Victor RAM and compare byte-by-byte against expected.
+// Returns number of mismatching bytes, or -1 if the DMA read-back itself failed.
+int dma_verify_victor_ram(uint32_t victor_addr, const uint8_t *expected, uint32_t len, uint32_t lba);
+#endif
 
 #ifdef UNIT_TEST
 uint8_t* test_get_victor_ram();

@@ -196,6 +196,38 @@ void debug_pio_state(PIO pio, uint sm) {
 
 }
 
+static inline bool wait_for_pin_level(uint pin, bool level, absolute_time_t deadline) {
+    while ((gpio_get(pin) != 0) != level) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            return false;
+        }
+        tight_loop_contents();
+    }
+    return true;
+}
+
+static inline bool wait_for_clock5_rising_edge(void) {
+    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    return wait_for_pin_level(CLOCK_5_PIN, false, deadline) &&
+           wait_for_pin_level(CLOCK_5_PIN, true, deadline);
+}
+
+static inline bool wait_for_hlda_assert(void) {
+    return wait_for_pin_level(HLDA_PIN, true, make_timeout_time_us(DMA_TIMEOUT_US));
+}
+
+static inline bool wait_for_hlda_release(void) {
+    return wait_for_pin_level(HLDA_PIN, false, make_timeout_time_us(DMA_TIMEOUT_US));
+}
+
+static inline void drive_pin_sio(uint pin, bool level) {
+    // Preload SIO output state before switching the pin mux away from PIO.
+    // That avoids a brief float window in SIO-input mode during handoff.
+    gpio_put(pin, level ? 1 : 0);
+    gpio_set_dir(pin, GPIO_OUT);
+    gpio_set_function(pin, GPIO_FUNC_SIO);
+}
+
 
 void print_segment_offset(uint32_t addr) {
     // Assumes addr < 1MB.
@@ -401,10 +433,10 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     return data;
 }
 
-void ontime_pin_setup() {
+void one_time_pin_setup() {
     //setup pin basics like enable pulls and set slew rate
     for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_4MA);
         gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         gpio_pull_down(pin); // enable pull-downs
         gpio_put(pin, 0);  // by default drive low
@@ -418,6 +450,13 @@ void ontime_pin_setup() {
     // we defaulted everything to pull low above, so just need to fix the active low pins
 
     gpio_pull_down(ALE_PIN);  // ALE is active high, so pull-down
+    gpio_set_drive_strength(ALE_PIN, GPIO_DRIVE_STRENGTH_12MA);   //ALE has a pulldown bias externally on the board, drive it higher.
+
+    //setup ALE constant pulldown pin to be disabled
+    gpio_init(ALE_CURRENT_SINK_PIN);
+    gpio_pull_down(ALE_CURRENT_SINK_PIN); 
+    gpio_set_dir(ALE_CURRENT_SINK_PIN, GPIO_OUT);
+    gpio_put(ALE_CURRENT_SINK_PIN, 0);
 
     gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
     gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
@@ -442,47 +481,84 @@ static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool prel
 }
 
 static inline void setup_pins_dma_control() {
-    
-    //setup data pins BD0 to A19 to be owned by PIO as inputs
     uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
-    for (int pin = BD0_PIN; pin <= ALE_PIN; ++pin) {
+
+    // ================================================================
+    // Bus pin settlement: drive control signals safe BEFORE address bus.
+    //
+    // The original DMA card had pull-ups R2/R3/R4 on RD/, WR/, DT/R/
+    // and a pull-down on ALE to prevent floating during bus exchange
+    // (Victor 9000 Hard Disk Subsystem manual, §2.1.3.3).  Our Pico
+    // board replaces the DMA card, so those pull-ups don't exist.
+    // Without explicit ordering, there's a window where the address bus
+    // is driven (to 0x00000) while RD/, WR/, ALE float — a spurious
+    // write to the interrupt vector table.
+    //
+    // Strategy: pre-configure PIO1's output registers and pindirs for
+    // control signals, then switch the pin mux.  The instant the mux
+    // switches from PIO0→PIO1, control signals are immediately driven
+    // to safe values with no float gap.
+    // ================================================================
+
+    // PHASE 1: Pre-configure PIO1 internal state for control signals.
+    // These only touch PIO1's registers — no effect on pads yet because
+    // pin functions are still PIO0.
+    uint32_t ctrl_high_mask = (1u << RD_PIN) | (1u << WR_PIN) |
+                              (1u << DTR_PIN) | (1u << EXTIO_PIN);
+    uint32_t ctrl_out_mask  = ctrl_high_mask | (1u << ALE_PIN);
+
+    // Output values: RD/=1, WR/=1, DTR/=1, EXTIO/=1 (inactive), ALE=0 (no latch)
+    pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                              ctrl_high_mask, ctrl_out_mask);
+    // Pindirs: all control signals as OUTPUT
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                 ctrl_out_mask, ctrl_out_mask);
+
+    // PHASE 2: Switch control signal pin functions to PIO1 FIRST.
+    // At each gpio_set_function(), the pad instantly switches from
+    // "floating (PIO0 input)" to "driven safe (PIO1 output HIGH/LOW)".
+    gpio_set_function(RD_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, RD_PIN);
+    gpio_set_function(WR_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, WR_PIN);
+    gpio_set_function(DTR_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, DTR_PIN);
+    gpio_set_function(ALE_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, ALE_PIN);
+    gpio_set_function(EXTIO_PIN, function);
+    pio_gpio_init(PIO_DMA_MASTER, EXTIO_PIN);
+
+    // PHASE 3: Now safe to set up address/data pins — control signals
+    // are already actively driven to safe levels.
+    // Pre-load address/data output registers to 0 (address 0x00000,
+    // harmless because ALE is held LOW so no address latch occurs).
+    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
-        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
-        //pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 1u, 1u << pin); // output direction
-
-       // printf("dma gpio_init %d  ", pin);
-        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin);
     }
 
-    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, ADDRESS_BUS_SIZE, true); // address pins as outputs
-
-    // Assign control pins to PIO, set direction and preload levels
-    uint32_t high = 1;
-    uint32_t low = 0;
-    setup_pin_dma_control(RD_PIN, GPIO_OUT, high);   // RD/ output, preload high
-    setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
-    setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
-    setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
-
-    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
+    // Address pins as outputs (safe: ALE=LOW prevents spurious latch)
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                   BD0_PIN, ADDRESS_BUS_SIZE, true);
 
     // DEN is at GPIO 40 (outside PIO's 0-31 range), use plain GPIO.
     // DEN is not needed for DMA — hold inactive (high).
     gpio_init(DEN_PIN);
-    gpio_put(DEN_PIN, 1);  // inactive (not needed for DMA)
+    gpio_put(DEN_PIN, 1);
     gpio_set_dir(DEN_PIN, GPIO_OUT);
-    
-    setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
-    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
-    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, low); // CLOCK_15B input, preload low
+
+    // Input pins: READY, CLK5, CLK15B
+    setup_pin_dma_control(READY_PIN, GPIO_IN, 0);
+    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, 0);
+    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, 0);
 
     gpio_init(SSO_PIN);
-    gpio_put(SSO_PIN, low); 
+    gpio_put(SSO_PIN, 0);
     gpio_set_dir(SSO_PIN, GPIO_OUT);
 
     gpio_init(IO_M_PIN);
-    gpio_put(IO_M_PIN, low);
+    gpio_put(IO_M_PIN, 0);
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
 
     // Explicitly release XACK by switching it to SIO/input during DMA.
@@ -492,22 +568,93 @@ static inline void setup_pins_dma_control() {
     gpio_set_dir(XACK_PIN, GPIO_IN);
 }
 
-static inline void setup_pins_register_inputs() {
-    //setup data pins BD0 to A19 to be owned by board register PIO as inputs
-    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, 32, false); // all pins as inputs
-    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
-        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
-        gpio_set_function(pin, function);
+static inline void park_dma_release_control_pins_on_sio(void) {
+    // Keep the high-risk strobes actively parked while HOLD is still asserted.
+    // This shrinks the float window that the external RC network has to absorb.
+    drive_pin_sio(ALE_PIN, 0);
+    drive_pin_sio(RD_PIN, 1);
+    drive_pin_sio(WR_PIN, 1);
+    drive_pin_sio(DTR_PIN, 1);
+}
 
-       // printf("PIO_REGISTERS gpio_init %d  ", pin);
-        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+static inline void prepare_register_pio_handoff_locked(void) {
+    uint reg_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+
+    // Release address/data first while the critical strobes stay parked on SIO.
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL,
+                                   BD0_PIN, ADDRESS_BUS_SIZE, false);
+
+    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
+        gpio_set_function(pin, reg_function);
+    }
+
+    // Restore the rest of the register-bus pins now.  ALE/RD/WR/DT/R stay on
+    // SIO until HLDA drops so they never float during the hand-back.
+    for (int pin = XACK_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        if (pin == HOLD_PIN || pin == HLDA_PIN) {
+            continue;
+        }
+        gpio_set_function(pin, reg_function);
     }
 
     // Release IO/M so the CPU can drive it during normal register cycles.
     gpio_set_function(IO_M_PIN, GPIO_FUNC_SIO);
     gpio_set_dir(IO_M_PIN, GPIO_IN);
-    
-} 
+}
+
+static inline void finish_register_pio_handoff_locked(void) {
+    uint reg_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+
+    // Return the CPU strobes to the register listener while HOLD is still
+    // asserted.  Driving them with SIO all the way until HLDA falls can fight
+    // the 8088's first resumed bus cycle.
+    gpio_set_function(ALE_PIN, reg_function);
+    gpio_set_function(RD_PIN, reg_function);
+    gpio_set_function(WR_PIN, reg_function);
+    gpio_set_function(DTR_PIN, reg_function);
+}
+
+static inline void restore_register_bus_after_dma(const char *context) {
+    // Move the noisy control pins off PIO1 and park them at safe levels before
+    // touching the DMA SM.  HOLD remains asserted throughout this phase.
+    park_dma_release_control_pins_on_sio();
+
+    //turn on constant current sink for ALE
+    gpio_put(ALE_CURRENT_SINK_PIN, 1);
+    gpio_set_dir(ALE_PIN, GPIO_OUT);
+    gpio_put(ALE_PIN, 0);
+
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
+
+    prepare_register_pio_handoff_locked();
+
+    if (!wait_for_clock5_rising_edge()) {
+        fast_log("%s: CLK5 sync TIMEOUT during bus release\n", context);
+    }
+
+    finish_register_pio_handoff_locked();
+
+    uint32_t padoe_before_reset = PIO_REGISTERS->dbg_padoe;
+    uint32_t padout_before_reset = PIO_REGISTERS->dbg_padout;
+    reset_register_pio_sm();
+
+    if (padoe_before_reset != 0) {
+        fast_log("%s: PIO0 padoe=0x%08x padout=0x%08x before SM reset\n",
+                 context, padoe_before_reset, padout_before_reset);
+    }
+
+    // HOLD/ is open-drain on the Victor side, so releasing direction is the
+    // safe equivalent of deasserting it high.
+    gpio_set_dir(HOLD_PIN, GPIO_IN);
+
+    if (!wait_for_hlda_release()) {
+        fast_log("%s: HLDA release TIMEOUT after HOLD release\n", context);
+    }
+    //turn off constant current sink for ALE
+    gpio_set_dir(ALE_PIN, GPIO_IN);
+    gpio_put(ALE_CURRENT_SINK_PIN, 0);
+}
 
 
 // Timeout for individual PIO blocking operations (per bus cycle, not per sector).
@@ -558,29 +705,13 @@ static void abort_dma_transfer(void) {
                        dma_registers.dma_address.full,
                        dma_registers.bus_ctrl);
 
-    // Stop the DMA PIO SM immediately
-    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
-    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
-
-    // Restore register pins and safely restart register SM
-    setup_pins_register_inputs();
-    reset_register_pio_sm();
-
-    // Release HOLD so 8088 can resume
-    gpio_set_dir(HOLD_PIN, GPIO_IN);
+    restore_register_bus_after_dma("DMA abort");
 }
 
 static inline bool obtain_dma_master() {
-    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
-    // Timeout protects against Victor clock stopping (crash/reboot/power-off).
-    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
-    while (gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
-        tight_loop_contents();
-    }
-    while (!gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
-        tight_loop_contents();
+    // Sync to CLOCK_5 edge to help avoid meta-stability around bus ownership.
+    if (!wait_for_clock5_rising_edge()) {
+        return false;
     }
 
     gpio_init(HOLD_PIN);
@@ -589,25 +720,25 @@ static inline bool obtain_dma_master() {
     gpio_init(HLDA_PIN);
     gpio_set_dir(HLDA_PIN, GPIO_IN);
 
-    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
-    while (!gpio_get(HLDA_PIN)) {
-        if (DMA_TIMEOUT_US && absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
-            gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD on timeout
-            return false;
-        }
-        tight_loop_contents();
+    if (!wait_for_hlda_assert()) {
+        gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD on timeout
+        return false;
     }
 
     return true;
 }
 
 static inline bool start_dma_control() {
+    uint64_t t0_obtain = time_us_64();
     if (!obtain_dma_master()) {
         sasi_log_dma_error(DMA_ERR_MASTER_FAIL,
                            dma_registers.dma_address.full,
                            dma_registers.bus_ctrl);
         return false;
     }
+    uint32_t obtain_elapsed = (uint32_t)(time_us_64() - t0_obtain);
+    sasi_op_record(obtain_elapsed, &sasi_op_timing.max_obtain_us,
+                   SASI_OP_OBTAIN, dma_registers.dma_address.full >> 9);
     // Release XACK/EXTIO pindirs before disabling register SM.
     // If the SM is mid-cycle with side S_XACK asserted, the frozen pindirs
     // would hold XACK low -> READY low -> DMA PIO hangs at wait READY.
@@ -626,27 +757,7 @@ static inline bool start_dma_control() {
 
 
 static inline void release_dma_master() {
-    //turn off DMA PIO and give back control to register PIO
-    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
-    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
-    setup_pins_register_inputs();
-
-    // Safe restart guarantees XACK/EXTIO are released and SM starts at T0.
-    reset_register_pio_sm();
-
-    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
-    // Timeout protects against Victor clock stopping during release.
-    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
-    while (gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
-        tight_loop_contents();
-    }
-    while (!gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
-        tight_loop_contents();
-    }
-
-    gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD/ is open drain on Victor
+    restore_register_bus_after_dma("DMA release");
 }
 
 
@@ -812,6 +923,46 @@ bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
     return true;
 }
+
+#ifdef VERIFY_DMA_WRITES
+dma_verify_stats_t dma_verify_stats;
+
+int dma_verify_victor_ram(uint32_t victor_addr, const uint8_t *expected, uint32_t len, uint32_t lba) {
+    uint8_t readback[512];
+    if (len > sizeof(readback)) len = sizeof(readback);
+
+    if (!dma_read_from_victor_ram(readback, len, victor_addr)) {
+        dma_verify_stats.sectors_checked++;
+        dma_verify_stats.sectors_failed++;
+        return -1;
+    }
+
+    int mismatches = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (readback[i] != expected[i]) {
+            mismatches++;
+            dma_verify_stats.total_byte_mismatches++;
+
+            if (!dma_verify_stats.first_error_recorded) {
+                dma_verify_stats.first_error_recorded = true;
+                dma_verify_stats.first_err_lba = lba;
+                dma_verify_stats.first_err_addr = (victor_addr + i) & 0xFFFFF;
+                dma_verify_stats.first_err_offset = (uint16_t)i;
+                dma_verify_stats.first_err_expected = expected[i];
+                dma_verify_stats.first_err_actual = readback[i];
+            }
+        }
+    }
+
+    dma_verify_stats.sectors_checked++;
+    if (mismatches > 0) {
+        dma_verify_stats.sectors_failed++;
+    }
+
+    return mismatches;
+}
+#endif // VERIFY_DMA_WRITES
+
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];
@@ -915,15 +1066,8 @@ void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
 // Hold the Victor 8088 via HOLD/HLDA handshake without touching PIO state machines.
 // Use around slow SD card I/O so the BIOS timeout counter cannot advance.
 bool hold_victor_bus(void) {
-    // Sync to CLOCK_5 rising edge for clean bus transition
-    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
-    while (gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
-        tight_loop_contents();
-    }
-    while (!gpio_get(CLOCK_5_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
-        tight_loop_contents();
+    if (!wait_for_clock5_rising_edge()) {
+        return false;
     }
 
     // Assert HOLD/ (open-drain)
@@ -933,14 +1077,9 @@ bool hold_victor_bus(void) {
     gpio_init(HLDA_PIN);
     gpio_set_dir(HLDA_PIN, GPIO_IN);
 
-    // Wait for 8088 to acknowledge with HLDA
-    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
-    while (!gpio_get(HLDA_PIN)) {
-        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
-            gpio_set_dir(HOLD_PIN, GPIO_IN);  // release on timeout
-            return false;
-        }
-        tight_loop_contents();
+    if (!wait_for_hlda_assert()) {
+        gpio_set_dir(HOLD_PIN, GPIO_IN);  // release on timeout
+        return false;
     }
     return true;
 }

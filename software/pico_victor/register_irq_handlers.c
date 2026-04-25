@@ -42,6 +42,9 @@ volatile uint32_t isr_tx_fifo_full_count = 0;
 volatile uint32_t isr_post_status_phase_count = 0;
 volatile bool status_phase_flag = false;
 
+// RESET event counter
+volatile uint32_t sasi_reset_count = 0;
+
 // Status-phase breakdown counters
 volatile uint32_t diag_status_reads = 0;
 volatile uint32_t diag_data_reads = 0;
@@ -452,6 +455,7 @@ void __time_critical_func(register_read_irq_isr)() {
                     bool now_sel = (data & DMA_SELECT_BIT) != 0;
 
                     if (data & DMA_RESET_BIT) {
+                        sasi_reset_count++;
                         // Signal Core 1 to abort any in-flight command immediately
                         dma_registers_t *dma = &dma_registers;
                         dma->reset_requested = true;
@@ -474,7 +478,11 @@ void __time_critical_func(register_read_irq_isr)() {
                     }
                 }
 
-                if (valid_offset) {
+                if (valid_offset && masked_offset != REG_DATA) {
+                    // Skip REG_DATA: host DATA writes are command bytes that must
+                    // NOT leak into the DATA cache.  The DATA cache holds target→host
+                    // values (status/message bytes) set by cached_set_data() and
+                    // phase-aware PREFETCH logic.
                     cached->values[masked_offset] = data;
                     if (masked_offset == REG_STATUS) {
                         cached->values[0x30] = data;

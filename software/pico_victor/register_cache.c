@@ -104,9 +104,16 @@ void warm_caches(void) {
     // Safe restart: clears FIFOs, releases XACK/EXTIO, JMPs to T0.
     reset_register_pio_sm();
 
+    gpio_set_function(HOLD_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(HOLD_PIN, GPIO_IN);
+    gpio_set_function(HLDA_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+
+    // The DMA master SM must stay idle until start_dma_control() has asserted
+    // HOLD and explicitly routed the DMA pins to PIO1.
     pio_sm_set_enabled(pio_dma_master, dma_sm_control, false);
     pio_sm_clear_fifos(pio_dma_master, dma_sm_control);
-    pio_sm_set_enabled(pio_dma_master, dma_sm_control, true);
+    pio_sm_set_enabled(pio_dma_master, dma_sm_control, false);
 
 
     // Re-enable IRQs (except DMA read IRQ which stays disabled until DMA is needed)

@@ -50,11 +50,18 @@
 #define SASI_DMA_SECTOR_RETRIES  8
 #define SASI_DMA_RETRY_WAIT_US   25
 
+// Per-operation timing breakdown
+sasi_op_timing_t sasi_op_timing;
+
+void sasi_op_timing_init(void) {
+    memset((void *)&sasi_op_timing, 0, sizeof(sasi_op_timing));
+}
+
 // Forward declarations for internal helpers
 static void signal_command_complete_with_status(dma_registers_t *dma, uint8_t status_byte);
 static void signal_dma_failure_status(dma_registers_t *dma);
 
-#if SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY
+#if SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY || defined(VERIFY_DMA_WRITES)
 /*
  * CRC-8 calculation using polynomial 0x07 (x^8 + x^2 + x + 1)
  * Used for verifying DMA transfers during testing.
@@ -73,7 +80,53 @@ static uint8_t sasi_crc8(const uint8_t *data, uint16_t len) {
     }
     return crc;
 }
-#endif
+#endif // SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY || VERIFY_DMA_WRITES
+
+#ifdef VERIFY_DMA_WRITES
+dma_crc_trace_t dma_crc_trace;
+
+void dma_crc_trace_init(void) {
+    memset(&dma_crc_trace, 0, sizeof(dma_crc_trace));
+}
+
+void dma_crc_trace_record(uint32_t lba, uint32_t dma_addr,
+                          const uint8_t *data, uint16_t len, uint8_t direction) {
+    uint32_t idx = dma_crc_trace.head & (DMA_CRC_TRACE_SIZE - 1);
+    dma_crc_trace.entries[idx].lba = lba;
+    dma_crc_trace.entries[idx].dma_addr = dma_addr & 0xFFFFF;
+    dma_crc_trace.entries[idx].crc8 = sasi_crc8(data, len);
+    dma_crc_trace.entries[idx].direction = direction;
+    dma_crc_trace.entries[idx].first_byte = data[0];
+    dma_crc_trace.entries[idx].last_byte = (len > 0) ? data[len - 1] : 0;
+    dma_crc_trace.head++;
+    dma_crc_trace.total++;
+}
+
+void dma_crc_trace_dump(void) {
+    uint32_t count = (dma_crc_trace.head >= DMA_CRC_TRACE_SIZE)
+                     ? DMA_CRC_TRACE_SIZE : dma_crc_trace.head;
+    uint32_t start = (dma_crc_trace.head >= DMA_CRC_TRACE_SIZE)
+                     ? dma_crc_trace.head - DMA_CRC_TRACE_SIZE : 0;
+
+    printf("\n=== DMA CRC TRACE (total=%lu, showing last %lu) ===\n",
+           (unsigned long)dma_crc_trace.total, (unsigned long)count);
+    printf("LBA      Addr    Dir CRC  First Last\n");
+    printf("-------  ------  --- ---  ----- ----\n");
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start + i) & (DMA_CRC_TRACE_SIZE - 1);
+        dma_crc_entry_t *e = &dma_crc_trace.entries[idx];
+        printf("%7lu  %05lX   %c   %02X   %02X    %02X\n",
+               (unsigned long)e->lba,
+               (unsigned long)e->dma_addr,
+               e->direction,
+               e->crc8,
+               e->first_byte,
+               e->last_byte);
+    }
+    printf("=== END DMA CRC TRACE ===\n\n");
+}
+#endif // VERIFY_DMA_WRITES
 
 #if SASI_DMA_READ_VERIFY
 /*
@@ -96,6 +149,15 @@ static uint8_t compute_expected_pattern_crc(uint32_t lba) {
     return crc;
 }
 #endif // SASI_DMA_READ_VERIFY
+
+// Per-command timing diagnostics
+volatile uint32_t sasi_last_cmd_us = 0;
+volatile uint32_t sasi_max_cmd_us = 0;
+volatile uint32_t sasi_cmd_over_1s_count = 0;
+volatile uint32_t sasi_cmd_over_4s_count = 0;
+
+// DMA transfer in progress flag — read by Core 0 stuck detector
+volatile bool sasi_in_dma_transfer = false;
 
 // SASI command state - file-scope so it can be reset on device reset
 static uint8_t sasi_command_buffer[16];
@@ -175,10 +237,11 @@ static void sasi_apply_command_delay(dma_registers_t *dma) {
     }
 
     // Hold command phase busy (BSY|CTL, no REQ) while the controller "executes".
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     sleep_us(SASI_COMMAND_DELAY_US);
 }
@@ -187,14 +250,12 @@ static void sasi_request_cmd_byte(dma_registers_t *dma) {
     // Controller requests next command byte: BSY|REQ|CTL, I/O=0 (host->dev)
     uint8_t before = dma->bus_ctrl;
     // Drop ACK between bytes and ensure we're in command phase.
-    dma->bus_ctrl &= ~(SASI_ACK_BIT | SASI_MSG_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl &= ~SASI_INP_BIT; // host -> controller
-    __dmb();  // Ensure bus_ctrl update is complete
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl to prevent
+    // ISR from serving stale phase if it preempts between the two writes.
+    uint8_t new_ctrl = (before & ~(SASI_ACK_BIT | SASI_MSG_BIT | SASI_INP_BIT))
+                       | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
     dma->state.non_dma_req = 1;
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    sasi_bus_ctrl_set(dma, new_ctrl);
     dma_update_interrupts(dma, true);
     sasi_fastlog("SASI: request_cmd_byte done, bus_ctrl 0x%02X->0x%02X\n", before, dma->bus_ctrl);
 }
@@ -214,16 +275,15 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
 
     dma->status = status_byte;
     cached_set_data(status_byte);
-    dma->bus_ctrl &= ~SASI_ACK_BIT;
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
-    dma->bus_ctrl &= ~SASI_MSG_BIT;
-    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
     dma->state.status_pending = 1;  // Mark that we're waiting for host to read status
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    // Host polls immediately after seeing IR4 - cache must be ready.
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl to prevent
+    // ISR from serving stale phase if it preempts between the two writes.
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_ACK_BIT | SASI_MSG_BIT))
+                           | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
     dma_update_interrupts(dma, true);
     sasi_fastlog("SASI: status phase ready, bus_ctrl=0x%02X, irq_pend=%d\n",
              dma->bus_ctrl, dma->state.interrupt_pending);
@@ -233,24 +293,26 @@ static void sasi_enter_message_phase(dma_registers_t *dma) {
     // Move to message in: BSY|REQ|CTL|INP|MSG (single 0x00 completion message)
     sasi_trace_event(TRACE_MSG_PHASE, 0x00, 0, dma ? dma->bus_ctrl : 0);
     cached_set_data(0x00);
-    dma->bus_ctrl &= ~SASI_ACK_BIT;
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
-    // CRITICAL: Update cache BEFORE asserting interrupt!
-    cached_status_sync_from_bus(dma);
-    __dmb();  // Ensure cache write is visible to Core 0
+    // Cache-first: sasi_bus_ctrl_set updates cache before bus_ctrl.
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~SASI_ACK_BIT)
+                           | (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
     dma_update_interrupts(dma, true);
 }
 
 static void sasi_release_bus(dma_registers_t *dma) {
     // Drop REQ/BSY and clear control lines to idle
     sasi_trace_event(TRACE_BUS_FREE, 0, 0, dma ? dma->bus_ctrl : 0);
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl cleared
-    dma_update_interrupts(dma, false);
-    cached_status_sync_from_bus(dma);
+    // Cache-first: clear DATA cache and status before bus_ctrl update.
     cached_set_data(0x00);  // Avoid stale DATA reads after bus free
+    {
+        uint8_t new_ctrl = dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
+    dma_update_interrupts(dma, false);
 }
 
 void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
@@ -290,10 +352,11 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             if (dma && dma->state.dma_enabled) {
                 uint8_t params[8];
                 // Enter DATA OUT phase: BSY asserted, CTL=0, INP=0.
-                dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-                dma->bus_ctrl |= SASI_BSY_BIT;
-                __dmb();
-                cached_status_sync_from_bus(dma);
+                {
+                    uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                                       | SASI_BSY_BIT;
+                    sasi_bus_ctrl_set(dma, new_ctrl);
+                }
 
                 // Read parameter bytes from Victor RAM via DMA.
                 uint32_t init_addr = dma->dma_address.full & 0x000FFFFF;
@@ -310,11 +373,12 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
                 // Non-DMA path: request 8 data-out bytes via DATA register.
                 dma->buffer.index = 0;
                 dma->state.data_out_expected = 8;
-                dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-                dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
-                __dmb();
-                dma->state.non_dma_req = 1;
-                cached_status_sync_from_bus(dma);
+                {
+                    uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                                       | (SASI_BSY_BIT | SASI_REQ_BIT);
+                    dma->state.non_dma_req = 1;
+                    sasi_bus_ctrl_set(dma, new_ctrl);
+                }
                 dma_update_interrupts(dma, true);
             } else {
                 signal_command_complete(dma);
@@ -425,11 +489,12 @@ bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte) {
 
     if (dma->state.data_out_expected > 0) {
         // More bytes expected - request next byte (data-out phase: BSY|REQ, CTL=0, INP=0)
-        dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
-        __dmb();
-        dma->state.non_dma_req = 1;
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_REQ_BIT);
+            dma->state.non_dma_req = 1;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
         dma_update_interrupts(dma, true);
         return true;
     }
@@ -451,6 +516,8 @@ bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte) {
 }
 
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
+    uint64_t cmd_start_us = time_us_64();
+
     // Parse Read(6) - command 0x08
     // cmd[1] (5 MSBs), cmd[2], cmd[3] = LBA, cmd[4] = count
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
@@ -467,10 +534,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     sasi_apply_command_delay(dma);
 
     // During command processing, reflect COMMAND busy (BSY|CTL) like MAME traces.
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     // Snapshot the DMA address into a local variable.  Core 0's ISR writes
     // individual bytes to dma->dma_address.bytes.* (address register updates),
@@ -493,6 +561,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint16_t completed_blocks = 0;
     bool transfer_ok = true;
 
+    sasi_in_dma_transfer = true;
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
         if (dma->reset_requested) {
@@ -500,20 +569,31 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         uint8_t sector_data[512];
+        uint64_t t0 = time_us_64();
         bool storage_read_ok = read_sector_from_disk(dma, sector + i, sector_data);
+        uint32_t sd_read_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(sd_read_elapsed, &sasi_op_timing.max_sd_read_us,
+                       SASI_OP_SD_READ, sector + i);
         if (!storage_read_ok) {
             transfer_ok = false;
             break;
         }
 
+#ifdef VERIFY_DMA_WRITES
+        // Record CRC of data read from storage (before DMA write to Victor)
+        dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'R');
+#endif
+
         // Switch to DATA IN just before DMA transfer
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
-        __dmb();
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_INP_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // DMA transfer to system RAM with retry loop
         bool dma_transfer_ok = false;
+        t0 = time_us_64();
         for (int attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
             if (dma_write_to_victor_ram(sector_data, 512, local_dma_addr)) {
                 dma_transfer_ok = true;
@@ -523,6 +603,9 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 sleep_us(SASI_DMA_RETRY_WAIT_US);
             }
         }
+        uint32_t dma_wr_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(dma_wr_elapsed, &sasi_op_timing.max_dma_write_us,
+                       SASI_OP_DMA_WRITE, sector + i);
 
         if (!dma_transfer_ok) {
             transfer_ok = false;
@@ -530,6 +613,31 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
                              (uint8_t)(local_dma_addr & 0xFF));
             break;
         }
+
+#ifdef VERIFY_DMA_WRITES
+        // Read-after-write verification: read back the sector we just wrote
+        // and compare byte-by-byte to catch bus timing corruption.
+        {
+            t0 = time_us_64();
+            int mismatches = dma_verify_victor_ram(local_dma_addr, sector_data, 512, sector + i);
+            uint32_t verify_elapsed = (uint32_t)(time_us_64() - t0);
+            sasi_op_record(verify_elapsed, &sasi_op_timing.max_verify_us,
+                           SASI_OP_VERIFY, sector + i);
+            if (mismatches > 0) {
+                printf("VERIFY FAIL: LBA %lu addr=%05lX mismatches=%d first_err: off=%u exp=0x%02X got=0x%02X\n",
+                       (unsigned long)(sector + i),
+                       (unsigned long)local_dma_addr,
+                       mismatches,
+                       dma_verify_stats.first_err_offset,
+                       dma_verify_stats.first_err_expected,
+                       dma_verify_stats.first_err_actual);
+            } else if (mismatches < 0) {
+                printf("VERIFY DMA READ FAIL: LBA %lu addr=%05lX\n",
+                       (unsigned long)(sector + i),
+                       (unsigned long)local_dma_addr);
+            }
+        }
+#endif // VERIFY_DMA_WRITES
 
         // Auto-increment local DMA address
         local_dma_addr = (local_dma_addr + 512) & 0x000FFFFF;
@@ -543,16 +651,21 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
-            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-            __dmb();
-            cached_status_sync_from_bus(dma);
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_CTL_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
         }
     }
+    sasi_in_dma_transfer = false;
 
     // If host reset during the loop, skip status — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
         return;
     }
 
@@ -600,6 +713,15 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->dma_address.full = local_dma_addr;
     }
 
+    // Record command timing
+    {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
+    }
+
     // Signal completion to host
     cached_sync_dma_address(dma);
     if (transfer_ok) {
@@ -612,6 +734,8 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 }
 
 void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
+    uint64_t cmd_start_us = time_us_64();
+
     // Parse Write(6)
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
@@ -627,10 +751,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     sasi_apply_command_delay(dma);
 
     // During command processing, reflect COMMAND busy (BSY|CTL).
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                           | (SASI_BSY_BIT | SASI_CTL_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
 
@@ -647,6 +772,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     bool transfer_ok = true;
     bool any_storage_writes = false;
 
+    sasi_in_dma_transfer = true;
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
         if (dma->reset_requested) {
@@ -655,13 +781,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         uint8_t sector_data[512];
         // Switch to DATA OUT just before DMA read from Victor RAM
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-        dma->bus_ctrl |= SASI_BSY_BIT;
-        __dmb();
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | SASI_BSY_BIT;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // DMA read from Victor RAM with retry loop
         bool dma_transfer_ok = false;
+        uint64_t t0 = time_us_64();
         for (int attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
             if (dma_read_from_victor_ram(sector_data, 512, local_dma_addr)) {
                 dma_transfer_ok = true;
@@ -671,6 +799,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 sleep_us(SASI_DMA_RETRY_WAIT_US);
             }
         }
+        uint32_t dma_rd_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(dma_rd_elapsed, &sasi_op_timing.max_dma_read_us,
+                       SASI_OP_DMA_READ, sector + i);
 
         if (!dma_transfer_ok) {
             transfer_ok = false;
@@ -680,6 +811,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         __dmb();  // Ensure DMA data is visible before writing to storage
+
+#ifdef VERIFY_DMA_WRITES
+        // Record CRC of data read from Victor RAM (before writing to storage)
+        dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'W');
+#endif
 
 #if SASI_DMA_READ_VERIFY
         // Verify DMA read against expected test pattern (for dma_verify.c round-trip test)
@@ -700,6 +836,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // Write to storage BEFORE incrementing address (write-then-advance)
         bool storage_write_ok = false;
+        t0 = time_us_64();
         if (storage_is_mounted(target)) {
             storage_write_ok = storage_write_sector(target, sector + i, sector_data, 512);
             if (storage_write_ok) {
@@ -717,6 +854,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 }
             }
         }
+        uint32_t sd_wr_elapsed = (uint32_t)(time_us_64() - t0);
+        sasi_op_record(sd_wr_elapsed, &sasi_op_timing.max_sd_write_us,
+                       SASI_OP_SD_WRITE, sector + i);
 
         if (!storage_write_ok) {
             transfer_ok = false;
@@ -737,16 +877,21 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
-            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
-            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
-            __dmb();
-            cached_status_sync_from_bus(dma);
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT))
+                               | (SASI_BSY_BIT | SASI_CTL_BIT);
+            sasi_bus_ctrl_set(dma, new_ctrl);
         }
     }
+    sasi_in_dma_transfer = false;
 
     // If host reset during the loop, skip status/sync — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
         return;
     }
 
@@ -754,11 +899,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // CRITICAL: check return value -- if sync fails the data never reached
     // the SD card and we must report CHECK_CONDITION to DOS.
     if (any_storage_writes && transfer_ok && storage_is_mounted(target)) {
+        uint64_t t_sync = time_us_64();
         if (!storage_sync(target)) {
             transfer_ok = false;
             sasi_trace_event(TRACE_DMA_RESULT, 3, completed_blocks,
                              dma ? dma->bus_ctrl : 0);
         }
+        uint32_t sync_elapsed = (uint32_t)(time_us_64() - t_sync);
+        sasi_op_record(sync_elapsed, &sasi_op_timing.max_sync_us,
+                       SASI_OP_SYNC, sector);
     }
 
     if (dma) {
@@ -766,6 +915,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = 0;
         // Write back final local address so completion log and BIOS readback are correct
         dma->dma_address.full = local_dma_addr;
+    }
+
+    // Record command timing
+    {
+        uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
+        sasi_last_cmd_us = elapsed;
+        if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
+        if (elapsed > 1000000) sasi_cmd_over_1s_count++;
+        if (elapsed > 4000000) sasi_cmd_over_4s_count++;
     }
 
     cached_sync_dma_address(dma);
@@ -809,10 +967,11 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
     sasi_printf("SASI: Request Sense, transferring %d bytes\n", size);
 
     // Enter Data-In phase: BSY asserted, I/O high (device->host), C/D low
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);  // INP=1 for data-in
-    __dmb();
-    cached_status_sync_from_bus(dma);
+    {
+        uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT))
+                           | (SASI_BSY_BIT | SASI_INP_BIT);
+        sasi_bus_ctrl_set(dma, new_ctrl);
+    }
 
     // Transfer sense data to host via DMA
     uint32_t sense_addr = dma->dma_address.full & 0x000FFFFF;
@@ -834,11 +993,11 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         if (param_len > sizeof(params)) param_len = sizeof(params);
 
         // Data-out phase: BSY asserted, I/O low, C/D low
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-        dma->bus_ctrl |= SASI_BSY_BIT;
-        dma->bus_ctrl &= ~SASI_INP_BIT;
-        __dmb();  // Ensure Core 0 sees bus_ctrl update
-        cached_status_sync_from_bus(dma);
+        {
+            uint8_t new_ctrl = (dma->bus_ctrl & ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT))
+                               | SASI_BSY_BIT;
+            sasi_bus_ctrl_set(dma, new_ctrl);
+        }
 
         // Read parameter list from Victor RAM (ignore content for now)
         uint32_t mode_addr = dma->dma_address.full & 0x000FFFFF;

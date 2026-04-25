@@ -28,6 +28,9 @@ defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")))
 cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
 static int read_request_counter = 0;
 
+// Core 1 liveness heartbeat
+volatile uint64_t defer_last_process_us = 0;
+
 void cached_status_sync_from_bus(const dma_registers_t *dma) {
     if (!dma) {
         return;
@@ -262,7 +265,12 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         defer_log("DEFER: SELECT released, bus_ctrl=0x%02x (entering cmd phase)\n", dma->bus_ctrl);
                     }
                 }
-                cached_status_sync_from_bus(dma);
+                // NOTE: Do NOT call cached_status_sync_from_bus() here.
+                // The ISR already set the correct cache values for all
+                // CONTROL write cases (RESET, SELECT assert, SELECT deassert)
+                // at register_irq_handlers.c:457-478.  A late sync here can
+                // revert ISR cache during SELECT→COMMAND transitions when
+                // Core 1 processes a stale deferred entry.
 #if DEFER_VERBOSE_LOG
                 defer_log("DEFER: Write CONTROL = 0x%02x prev_sel=%d bus_ctrl=0x%02x\n",
                          write_data, prev_sel, dma->bus_ctrl);
@@ -293,14 +301,10 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                 dma->state.non_dma_req = 0;
                 dma->state.asserting_ack = 1;
                 // Drop REQ to acknowledge the byte, then assert ACK.
-                dma->bus_ctrl &= ~SASI_REQ_BIT;
-                dma->bus_ctrl |= SASI_ACK_BIT;
-                __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
-                // CRITICAL: Sync cache IMMEDIATELY after bus_ctrl change.
-                // If we wait until after command processing, the host might poll
-                // status and see stale cached data (timing race that causes DATA_RD
-                // during what appears to be wrong phase).
-                cached_status_sync_from_bus(dma);
+                // Cache-first: update cache BEFORE bus_ctrl to prevent ISR from
+                // serving stale phase if it preempts between the two writes.
+                uint8_t new_ctrl = (dma->bus_ctrl & ~SASI_REQ_BIT) | SASI_ACK_BIT;
+                sasi_bus_ctrl_set(dma, new_ctrl);
             }
 
             // Debug: log bus_ctrl to understand command processing
@@ -395,6 +399,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
             return;
     }
     defer_queue.processed++;
+    defer_last_process_us = time_us_64();
 }
 
 // Core 1 worker main loop
