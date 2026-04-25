@@ -436,7 +436,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 void one_time_pin_setup() {
     //setup pin basics like enable pulls and set slew rate
     for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_4MA);
         gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         gpio_pull_down(pin); // enable pull-downs
         gpio_put(pin, 0);  // by default drive low
@@ -450,12 +450,13 @@ void one_time_pin_setup() {
     // we defaulted everything to pull low above, so just need to fix the active low pins
 
     gpio_pull_down(ALE_PIN);  // ALE is active high, so pull-down
+    gpio_set_drive_strength(ALE_PIN, GPIO_DRIVE_STRENGTH_12MA);   //ALE has a pulldown bias externally on the board, drive it higher.
 
     //setup ALE constant pulldown pin to be disabled
     gpio_init(ALE_CURRENT_SINK_PIN);
     gpio_pull_down(ALE_CURRENT_SINK_PIN); 
+    gpio_set_dir(ALE_CURRENT_SINK_PIN, GPIO_OUT);
     gpio_put(ALE_CURRENT_SINK_PIN, 0);
-
 
     gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
     gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
@@ -620,6 +621,8 @@ static inline void restore_register_bus_after_dma(const char *context) {
 
     //turn on constant current sink for ALE
     gpio_put(ALE_CURRENT_SINK_PIN, 1);
+    gpio_set_dir(ALE_PIN, GPIO_OUT);
+    gpio_put(ALE_PIN, 0);
 
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
@@ -649,6 +652,7 @@ static inline void restore_register_bus_after_dma(const char *context) {
         fast_log("%s: HLDA release TIMEOUT after HOLD release\n", context);
     }
     //turn off constant current sink for ALE
+    gpio_set_dir(ALE_PIN, GPIO_IN);
     gpio_put(ALE_CURRENT_SINK_PIN, 0);
 }
 
