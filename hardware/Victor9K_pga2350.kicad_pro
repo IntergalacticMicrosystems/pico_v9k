@@ -3,6 +3,8 @@
     "3dviewports": [],
     "design_settings": {
       "defaults": {
+        "apply_defaults_to_fp_barcodes": false,
+        "apply_defaults_to_fp_dimensions": false,
         "apply_defaults_to_fp_fields": false,
         "apply_defaults_to_fp_shapes": false,
         "apply_defaults_to_fp_text": false,
@@ -61,10 +63,6 @@
       ],
       "drc_exclusions": [
         [
-          "footprint_symbol_mismatch|262809401|109742000|226f44ff-00eb-4987-aa9c-6db284984f6a|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
           "footprint_type_mismatch|260567000|137299000|e85eb7b6-fe4d-4fd3-b3cd-45b3e60a4706|00000000-0000-0000-0000-000000000000",
           ""
         ]
@@ -87,6 +85,7 @@
         "extra_footprint": "warning",
         "footprint": "error",
         "footprint_filters_mismatch": "ignore",
+        "footprint_symbol_field_mismatch": "warning",
         "footprint_symbol_mismatch": "warning",
         "footprint_type_mismatch": "error",
         "hole_clearance": "error",
@@ -105,6 +104,7 @@
         "mirrored_text_on_front_layer": "warning",
         "missing_courtyard": "ignore",
         "missing_footprint": "warning",
+        "missing_tuning_profile": "warning",
         "net_conflict": "warning",
         "nonmirrored_text_on_back_layer": "warning",
         "npth_inside_courtyard": "ignore",
@@ -124,9 +124,12 @@
         "too_many_vias": "error",
         "track_angle": "error",
         "track_dangling": "warning",
+        "track_not_centered_on_via": "error",
+        "track_on_post_machined_layer": "error",
         "track_segment_length": "error",
         "track_width": "error",
         "tracks_crossing": "error",
+        "tuning_profile_track_geometries": "ignore",
         "unconnected_items": "error",
         "unresolved_variable": "error",
         "via_dangling": "warning",
@@ -144,7 +147,7 @@
         "min_hole_to_hole": 0.25,
         "min_microvia_diameter": 0.2,
         "min_microvia_drill": 0.1,
-        "min_resolved_spokes": 2,
+        "min_resolved_spokes": 1,
         "min_silk_clearance": 0.0,
         "min_text_height": 0.75,
         "min_text_thickness": 0.08,
@@ -245,17 +248,28 @@
       "zones_use_no_outline": true
     },
     "ipc2581": {
+      "bom_rev": "",
       "dist": "",
       "distpn": "",
       "internal_id": "",
       "mfg": "",
-      "mpn": ""
+      "mpn": "",
+      "sch_revision": ""
     },
     "layer_pairs": [],
     "layer_presets": [],
     "viewports": []
   },
   "boards": [],
+  "component_class_settings": {
+    "assignments": [],
+    "meta": {
+      "version": 0
+    },
+    "sheet_component_classes": {
+      "enabled": false
+    }
+  },
   "cvpcb": {
     "equivalence_files": []
   },
@@ -447,11 +461,14 @@
       "duplicate_sheet_names": "error",
       "endpoint_off_grid": "warning",
       "extra_units": "error",
+      "field_name_whitespace": "warning",
       "footprint_filter": "ignore",
       "footprint_link_issues": "warning",
       "four_way_junction": "ignore",
       "global_label_dangling": "warning",
+      "ground_pin_not_ground": "warning",
       "hier_label_mismatch": "error",
+      "isolated_pin_label": "warning",
       "label_dangling": "error",
       "label_multiple_wires": "warning",
       "lib_symbol_issues": "warning",
@@ -474,6 +491,7 @@
       "similar_power": "warning",
       "simulation_model_issue": "ignore",
       "single_global_label": "ignore",
+      "stacked_pin_name": "warning",
       "unannotated": "error",
       "unconnected_wire_endpoint": "warning",
       "undefined_netclass": "error",
@@ -506,6 +524,7 @@
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.25,
+        "tuning_profile": "",
         "via_diameter": 0.8,
         "via_drill": 0.4,
         "wire_width": 6
@@ -523,13 +542,14 @@
         "priority": 0,
         "schematic_color": "rgb(194, 0, 0)",
         "track_width": 0.4,
+        "tuning_profile": "",
         "via_diameter": 1.6,
         "via_drill": 1.4,
         "wire_width": 12
       }
     ],
     "meta": {
-      "version": 4
+      "version": 5
     },
     "net_colors": null,
     "netclass_assignments": {
@@ -537,6 +557,9 @@
         "Power"
       ],
       "+5V": [
+        "Power"
+      ],
+      "-12V": [
         "Power"
       ],
       "/+12VLT": [
@@ -561,6 +584,10 @@
       {
         "netclass": "Power",
         "pattern": "\\+3.3V"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "+5V"
       }
     ]
   },
@@ -580,6 +607,10 @@
   },
   "schematic": {
     "annotate_start_num": 0,
+    "annotation": {
+      "method": 0,
+      "sort_order": 0
+    },
     "bom_export_filename": "",
     "bom_fmt_presets": [],
     "bom_fmt_settings": {
@@ -753,6 +784,57 @@
       "sort_asc": true,
       "sort_field": "Reference"
     },
+    "bus_aliases": {
+      "bus_cntrl": [
+        "HOLD",
+        "EXTIO",
+        "XACK"
+      ],
+      "bus_cycle": [
+        "IO/M",
+        "SSO",
+        "DT/R",
+        "ALE",
+        "RD",
+        "WR",
+        "DEN"
+      ],
+      "bus_input": [
+        "HOLD",
+        "EXTIO",
+        "XACK",
+        "NMI",
+        "IR4",
+        "IR5",
+        "IRQ"
+      ],
+      "clock_sig": [
+        "CLK5",
+        "CLK15B",
+        "PHASE2",
+        "RESET",
+        "DLATCH",
+        "CSEN",
+        "HLDA",
+        "READY"
+      ],
+      "control_sig": [
+        "ALE",
+        "RD",
+        "WR",
+        "DEN",
+        "DLATCH",
+        "CSEN",
+        "HLDA",
+        "READY"
+      ],
+      "interrupt": [
+        "NMI",
+        "IR4",
+        "IR5",
+        "IRQ"
+      ]
+    },
     "connection_grid_size": 50.0,
     "drawing": {
       "dashed_lines_dash_length_ratio": 12.0,
@@ -760,6 +842,7 @@
       "default_line_thickness": 6.0,
       "default_text_size": 50.0,
       "field_names": [],
+      "hop_over_size_choice": 0,
       "intersheets_ref_own_page": false,
       "intersheets_ref_prefix": "",
       "intersheets_ref_short": false,
@@ -792,6 +875,7 @@
     },
     "page_layout_descr_file": "",
     "plot_directory": "",
+    "reuse_designators": true,
     "space_save_all_events": true,
     "spice_adjust_passive_values": false,
     "spice_current_sheet_as_root": false,
@@ -801,13 +885,28 @@
     "spice_save_all_dissipations": false,
     "spice_save_all_voltages": false,
     "subpart_first_id": 65,
-    "subpart_id_separator": 0
+    "subpart_id_separator": 0,
+    "top_level_sheets": [
+      {
+        "filename": "Victor9K_pga2350.kicad_sch",
+        "name": "Victor9K_pga2350",
+        "uuid": "5b33c959-3c1d-4b80-abe2-6af3249f51b6"
+      }
+    ],
+    "used_designators": "",
+    "variants": []
   },
   "sheets": [
     [
       "5b33c959-3c1d-4b80-abe2-6af3249f51b6",
-      "Root"
+      "Victor9K_pga2350"
     ]
   ],
-  "text_variables": {}
+  "text_variables": {},
+  "tuning_profiles": {
+    "meta": {
+      "version": 0
+    },
+    "tuning_profiles_impedance_geometric": []
+  }
 }
