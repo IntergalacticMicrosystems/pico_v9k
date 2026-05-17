@@ -9,16 +9,16 @@
 #include "hardware/clocks.h"
 #include "pico_victor/dma.h"
 
-#define UART_ID uart0
-#define BAUD_RATE 115200
-#define UART_TX_PIN 46
+#define TEST_UART_ID uart0
+#define TEST_BAUD_RATE 115200
+#define TEST_UART_TX_PIN 46
 
 void initialize_uart() {
-    gpio_init(UART_TX_PIN);
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    uart_init(UART_ID, BAUD_RATE);
-    uart_set_fifo_enabled(UART_ID, false);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
+    gpio_init(TEST_UART_TX_PIN);
+    gpio_set_function(TEST_UART_TX_PIN, GPIO_FUNC_UART);
+    uart_init(TEST_UART_ID, TEST_BAUD_RATE);
+    uart_set_fifo_enabled(TEST_UART_ID, false);
+    stdio_uart_init_full(TEST_UART_ID, TEST_BAUD_RATE, TEST_UART_TX_PIN, -1);
 }
 
 int main() {

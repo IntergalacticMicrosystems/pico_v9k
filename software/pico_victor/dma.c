@@ -452,12 +452,6 @@ void one_time_pin_setup() {
     gpio_pull_down(ALE_PIN);  // ALE is active high, so pull-down
     gpio_set_drive_strength(ALE_PIN, GPIO_DRIVE_STRENGTH_12MA);   //ALE has a pulldown bias externally on the board, drive it higher.
 
-    //setup ALE constant pulldown pin to be disabled
-    gpio_init(ALE_CURRENT_SINK_PIN);
-    gpio_pull_down(ALE_CURRENT_SINK_PIN); 
-    gpio_set_dir(ALE_CURRENT_SINK_PIN, GPIO_OUT);
-    gpio_put(ALE_CURRENT_SINK_PIN, 0);
-
     gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
     gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
     gpio_pull_up(DTR_PIN);  // DTR is active low, so pull-up 
@@ -619,8 +613,6 @@ static inline void restore_register_bus_after_dma(const char *context) {
     // touching the DMA SM.  HOLD remains asserted throughout this phase.
     park_dma_release_control_pins_on_sio();
 
-    //turn on constant current sink for ALE
-    gpio_put(ALE_CURRENT_SINK_PIN, 1);
     gpio_set_dir(ALE_PIN, GPIO_OUT);
     gpio_put(ALE_PIN, 0);
 
@@ -653,7 +645,6 @@ static inline void restore_register_bus_after_dma(const char *context) {
     }
     //turn off constant current sink for ALE
     gpio_set_dir(ALE_PIN, GPIO_IN);
-    gpio_put(ALE_CURRENT_SINK_PIN, 0);
 }
 
 
@@ -924,7 +915,7 @@ bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
     return true;
 }
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
 dma_verify_stats_t dma_verify_stats;
 
 int dma_verify_victor_ram(uint32_t victor_addr, const uint8_t *expected, uint32_t len, uint32_t lba) {

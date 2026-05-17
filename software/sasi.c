@@ -82,7 +82,7 @@ static uint8_t sasi_crc8(const uint8_t *data, uint16_t len) {
 }
 #endif // SASI_DMA_READ_VERIFY || SASI_DMA_WRITE_VERIFY || VERIFY_DMA_WRITES
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
 dma_crc_trace_t dma_crc_trace;
 
 void dma_crc_trace_init(void) {
@@ -579,7 +579,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
             break;
         }
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
         // Record CRC of data read from storage (before DMA write to Victor)
         dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'R');
 #endif
@@ -614,7 +614,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
             break;
         }
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
         // Read-after-write verification: read back the sector we just wrote
         // and compare byte-by-byte to catch bus timing corruption.
         {
@@ -812,7 +812,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         __dmb();  // Ensure DMA data is visible before writing to storage
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
         // Record CRC of data read from Victor RAM (before writing to storage)
         dma_crc_trace_record(sector + i, local_dma_addr, sector_data, 512, 'W');
 #endif

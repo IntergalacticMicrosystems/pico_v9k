@@ -242,12 +242,9 @@ void init_register_irq_handlers(void) {
         dummy = cached->values[0x30];
     }
 
-    // Touch critical SIO registers
-    volatile uint32_t dummy32;
-    dummy32 = *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG;
-    dummy32 = *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG;
 
     // Touch PIO registers
+    volatile uint32_t dummy32;
     dummy32 = PIO_REGISTERS->rxf[REG_SM_CONTROL];
     dummy32 = PIO_REGISTERS->txf[REG_SM_CONTROL];
     dummy32 = PIO_REGISTERS->fstat;

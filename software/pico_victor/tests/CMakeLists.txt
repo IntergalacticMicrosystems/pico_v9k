@@ -24,6 +24,11 @@ pico_generate_pio_header(test_clock_sideset
     ${CMAKE_CURRENT_LIST_DIR}/test_clock_sideset.pio
 )
 
+# Generate PIO headers for cached version
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_master.pio)
+
+
 # Link required libraries
 target_link_libraries(test_clock_sideset
     pico_stdlib

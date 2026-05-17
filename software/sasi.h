@@ -145,7 +145,7 @@ static inline void sasi_op_record(uint32_t elapsed_us, volatile uint32_t *max_fi
 // Per-sector CRC trace ring buffer for DMA transfer debugging.
 // Records CRC-8 + first/last byte for every sector transferred via DMA
 // in both directions: 'R' = disk→Victor (READ(6)), 'W' = Victor→disk (WRITE(6)).
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
 #define DMA_CRC_TRACE_SIZE 2048
 
 typedef struct {

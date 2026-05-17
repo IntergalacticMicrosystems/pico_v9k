@@ -1,167 +1,139 @@
 /*
- * benchmark_irq.c - Benchmark different IRQ handler implementations
+ * benchmark_irq.c - Lightweight benchmark for current register FIFO payload decoding.
+ *
+ * The older benchmark compared removed dma_fast/dma_ultra_fast handlers.  This
+ * target now stays aligned with the maintained cached register path by measuring
+ * the small decode primitives used before ISR side effects.
  */
 
 #include "pico/stdlib.h"
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
 #include "hardware/structs/systick.h"
 #include "hardware/uart.h"
-#include "hardware/gpio.h"
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
-#include <string.h>
+#include <stdio.h>
+
 #include "pico_victor/dma.h"
-#include "pico_victor/dma_fast.h"
-#include "pico_victor/dma_ultra_fast.h"
 
-// UART configuration matching dma_board.c
-#define UART_ID uart0
-#define BAUD_RATE 115200
-#define UART_TX_PIN 46
-#define UART_RX_PIN 45
+#define BENCH_UART_ID uart0
+#define BENCH_BAUD_RATE 115200
+#define BENCH_UART_TX_PIN 46
 
-// Test data structure
+typedef enum {
+    BENCH_PREFETCH,
+    BENCH_READ_COMMIT,
+    BENCH_WRITE,
+} bench_op_t;
+
 typedef struct {
     uint32_t address;
     uint8_t data;
-    uint8_t payload_type;
+    bench_op_t op;
     const char *description;
-} test_case_t;
+} bench_case_t;
 
-// Test cases covering all register types
-static test_case_t test_cases[] = {
-    // Control register tests
-    {0xEF300, 0x15, FIFO_REG_WRITE,    "Write control register"},
-    {0xEF300, 0x00, FIFO_PREFETCH_ADDRESS, "Read control register"},
-    
-    // Data register tests  
-    {0xEF310, 0x55, FIFO_REG_WRITE,    "Write data register"},
-    {0xEF310, 0x00, FIFO_PREFETCH_ADDRESS, "Read data register"},
-    
-    // Status register tests
-    {0xEF320, 0x00, FIFO_PREFETCH_ADDRESS, "Read status register"},
-    
-    // Address register tests (most common)
-    {0xEF380, 0x00, FIFO_REG_WRITE,    "Write DMA addr low"},
-    {0xEF380, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr low"},
-    {0xEF3A0, 0x50, FIFO_REG_WRITE,    "Write DMA addr mid"},
-    {0xEF3A0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr mid"},
-    {0xEF3C0, 0x0F, FIFO_REG_WRITE,    "Write DMA addr high"},
-    {0xEF3C0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr high"},
+static const bench_case_t test_cases[] = {
+    {0xEF300, 0x15, BENCH_WRITE,       "write control"},
+    {0xEF310, 0x55, BENCH_WRITE,       "write data"},
+    {0xEF320, 0x00, BENCH_PREFETCH,    "prefetch status"},
+    {0xEF330, 0x00, BENCH_READ_COMMIT, "commit status alias"},
+    {0xEF380, 0x12, BENCH_WRITE,       "write addr low"},
+    {0xEF3A0, 0x34, BENCH_WRITE,       "write addr mid"},
+    {0xEF3C0, 0x0F, BENCH_WRITE,       "write addr high"},
+    {0xEF380, 0x00, BENCH_PREFETCH,    "prefetch addr low"},
+    {0xEF3A0, 0x00, BENCH_READ_COMMIT, "commit addr mid"},
 };
 
-// Simulate PIO FIFO access
-static uint32_t simulated_fifo_value;
-static uint32_t simulated_tx_value;
+static volatile uint32_t bench_sink;
 
-// Mock PIO functions for benchmark mode using macros
-// This avoids redefinition errors with SDK functions
-#define pio_sm_get(pio, sm) (simulated_fifo_value)
-#define pio_sm_get_tx_fifo_level(pio, sm) (4)
-
-// Stub functions for external dependencies
-void fast_log(const char *msg) {
-    // No-op for benchmark
-    (void)msg;
+static inline uint32_t board_fifo_encode_prefetch(uint32_t address) {
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_REG_PREFETCH << 30);
 }
 
-void handle_sasi_command_byte(uint8_t cmd) {
-    // No-op for benchmark
-    (void)cmd;
-}
-
-// Benchmark function
-typedef void (*irq_handler_t)(void);
-
-static void benchmark_handler(irq_handler_t handler, const char *name, test_case_t *test) {
-    // Prepare simulated FIFO value
-    switch (test->payload_type) {
-        case FIFO_PREFETCH_ADDRESS:
-            simulated_fifo_value = dma_fifo_encode_prefetch(test->address);
-            break;
-        case FIFO_READ_COMMIT:
-            simulated_fifo_value = board_fifo_encode_read(test->address);
-            break;
-        case FIFO_REG_WRITE:
-            simulated_fifo_value = dma_fifo_encode_write(test->address, test->data);
-            break;
+static uint32_t encode_case(const bench_case_t *test) {
+    switch (test->op) {
+        case BENCH_PREFETCH:
+            return board_fifo_encode_prefetch(test->address);
+        case BENCH_READ_COMMIT:
+            return board_fifo_encode_read(test->address);
+        case BENCH_WRITE:
+            return dma_fifo_encode_write(test->address, test->data);
         default:
-            simulated_fifo_value = 0;
-            break;
+            return 0;
     }
-    
-    // Configure SysTick for measurement
-    systick_hw->csr = 0x5; // Enable, use processor clock
-    systick_hw->rvr = 0x00FFFFFF;
-    
-    // Warm up caches
-    for (int i = 0; i < 10; i++) {
-        handler();
+}
+
+static inline uint32_t decode_current_fifo_payload(uint32_t raw_value) {
+    uint32_t payload_type = fifo_payload_type(raw_value);
+    uint32_t address;
+    uint32_t data = 0;
+
+    if (payload_type == FIFO_REG_WRITE) {
+        address = dma_fifo_write_address(raw_value);
+        data = dma_fifo_write_data(raw_value);
+    } else {
+        address = board_fifo_read_address(raw_value);
     }
-    
-    // Measure multiple runs
-    uint32_t min_cycles = 0xFFFFFFFF;
+
+    uint32_t offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFFu;
+    return (payload_type << 24) | (offset << 8) | data;
+}
+
+static void initialize_uart(void) {
+    gpio_init(BENCH_UART_TX_PIN);
+    gpio_set_function(BENCH_UART_TX_PIN, GPIO_FUNC_UART);
+    uart_init(BENCH_UART_ID, BENCH_BAUD_RATE);
+    uart_set_fifo_enabled(BENCH_UART_ID, false);
+    stdio_uart_init_full(BENCH_UART_ID, BENCH_BAUD_RATE, BENCH_UART_TX_PIN, -1);
+}
+
+static void benchmark_case(const bench_case_t *test) {
+    const uint32_t raw_value = encode_case(test);
+    const int runs = 10000;
+    uint32_t min_cycles = 0xFFFFFFFFu;
     uint32_t max_cycles = 0;
-    uint32_t total_cycles = 0;
-    const int runs = 1000;
-    
+    uint64_t total_cycles = 0;
+
+    for (int i = 0; i < 32; i++) {
+        bench_sink ^= decode_current_fifo_payload(raw_value);
+    }
+
     for (int i = 0; i < runs; i++) {
         uint32_t start = systick_hw->cvr;
-        handler();
+        bench_sink ^= decode_current_fifo_payload(raw_value);
         uint32_t end = systick_hw->cvr;
-        
-        uint32_t cycles = (start >= end) ? (start - end) : (start + (0x00FFFFFF - end));
-        
+        uint32_t cycles = (start >= end) ? (start - end) : (start + (0x00FFFFFFu - end));
+
         if (cycles < min_cycles) min_cycles = cycles;
         if (cycles > max_cycles) max_cycles = cycles;
         total_cycles += cycles;
     }
-    
-    uint32_t avg_cycles = total_cycles / runs;
-    
-    printf("%-20s | %-30s | Min: %3lu cyc (%5.1f ns) | Avg: %3lu cyc (%5.1f ns) | Max: %3lu cyc (%5.1f ns)\n",
-           name, test->description,
-           min_cycles, min_cycles * 5.0,
-           avg_cycles, avg_cycles * 5.0, 
-           max_cycles, max_cycles * 5.0);
+
+    uint32_t avg_cycles = (uint32_t)(total_cycles / runs);
+    printf("%-20s raw=0x%08lX min=%3lu cyc avg=%3lu cyc max=%3lu cyc\n",
+           test->description,
+           (unsigned long)raw_value,
+           (unsigned long)min_cycles,
+           (unsigned long)avg_cycles,
+           (unsigned long)max_cycles);
 }
 
-int main() {
-    // Initialize UART with custom pins matching dma_board.c
-    gpio_init(UART_TX_PIN);
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+int main(void) {
+    set_sys_clock_khz(200000, true);
+    initialize_uart();
+    sleep_ms(1000);
 
-    uart_init(UART_ID, BAUD_RATE);
-    uart_set_fifo_enabled(UART_ID, false);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
+    systick_hw->csr = 0x5;
+    systick_hw->rvr = 0x00FFFFFF;
 
-    sleep_ms(2000); // Wait for UART to stabilize
-    
-    printf("\n=== DMA IRQ Handler Benchmark ===\n");
-    printf("System clock: 200MHz (5ns per cycle)\n");
-    printf("Target: <80ns (<16 cycles)\n\n");
-    
-    // Initialize DMA registers
-    dma_registers_t *dma = &dma_registers;
+    printf("\n=== Current Register FIFO Decode Benchmark ===\n");
+    printf("System clock: 200MHz, 5ns per cycle\n\n");
 
-    
-    // Run benchmarks for each test case
-    for (size_t i = 0; i < sizeof(test_cases)/sizeof(test_cases[0]); i++) {
-        printf("\nTest case: %s\n", test_cases[i].description);
-        printf("%-20s | %-30s | %-25s | %-25s | %-25s\n",
-               "Implementation", "Operation", "Minimum", "Average", "Maximum");
-        printf("================================================================================================================================================\n");
-        
-        benchmark_handler(registers_irq_handler, "Original", &test_cases[i]);
-        benchmark_handler(registers_irq_handler_fast, "Fast", &test_cases[i]);
-        benchmark_handler(registers_irq_handler_ultra, "Ultra", &test_cases[i]);
-        benchmark_handler(registers_irq_handler_ultra_asm, "Ultra ASM", &test_cases[i]);
+    for (size_t i = 0; i < sizeof(test_cases) / sizeof(test_cases[0]); i++) {
+        benchmark_case(&test_cases[i]);
     }
-    
-    printf("\n=== Summary ===\n");
-    printf("Address register operations (0x80-0xFF) should be fastest\n");
-    printf("Complex registers (0x00-0x2F) will be slower due to logic\n");
-    printf("Ultra ASM version should achieve <80ns for address registers\n");
-    
+
+    printf("\nbench_sink=0x%08lX\n", (unsigned long)bench_sink);
     return 0;
 }

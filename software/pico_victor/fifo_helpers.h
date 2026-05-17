@@ -38,16 +38,6 @@ extern volatile uint32_t fifo_trace_tail;
 extern volatile uint32_t fifo_pending_prefetch;
 #endif
 
-// For pins > 31, we need to use different registers
-#if DEBUG_PIN >= 32
-#define DEBUG_PIN_MASK (1u << (DEBUG_PIN - 32))
-#define SIO_GPIO_OUT_SET_REG (SIO_BASE + SIO_GPIO_HI_OUT_SET_OFFSET)
-#define SIO_GPIO_OUT_CLR_REG (SIO_BASE + SIO_GPIO_HI_OUT_CLR_OFFSET)
-#else
-#define DEBUG_PIN_MASK (1u << DEBUG_PIN)
-#define SIO_GPIO_OUT_SET_REG (SIO_BASE + SIO_GPIO_OUT_SET_OFFSET)
-#define SIO_GPIO_OUT_CLR_REG (SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET)
-#endif
 
 static inline void fifo_trace_record(uint32_t raw_value,
                                      uint32_t tag,
