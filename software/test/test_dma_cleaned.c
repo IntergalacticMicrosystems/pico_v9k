@@ -19,8 +19,7 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/iobank0.h"
-#include "dma_rw_control.pio.h"
-#include "dma_rw_output.pio.h"
+#include "dma_master.pio.h"
 #include "pico_victor/dma.h"
 
 // Test parameters - start simple
@@ -28,10 +27,10 @@
 #define TEST_DATA       0xAA     // Test data pattern
 
 // Custom UART configuration matching your hardware
-#define UART_ID         uart0
-#define BAUD_RATE       115200
-#define UART_TX_PIN     46
-#define UART_RX_PIN     45
+#define TEST_UART_ID         uart0
+#define TEST_BAUD_RATE       115200
+#define TEST_UART_TX_PIN     46
+#define TEST_UART_RX_PIN     45
 
 // Debug pin for oscilloscope measurements
 #define DEBUG_PIN       44
@@ -40,12 +39,12 @@
  * Initialize custom UART configuration
  */
 static void initialize_uart(void) {
-    gpio_init(UART_TX_PIN);
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_init(TEST_UART_TX_PIN);
+    gpio_set_function(TEST_UART_TX_PIN, GPIO_FUNC_UART);
 
-    uart_init(UART_ID, BAUD_RATE);
-    uart_set_fifo_enabled(UART_ID, false);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
+    uart_init(TEST_UART_ID, TEST_BAUD_RATE);
+    uart_set_fifo_enabled(TEST_UART_ID, false);
+    stdio_uart_init_full(TEST_UART_ID, TEST_BAUD_RATE, TEST_UART_TX_PIN, -1);
 }
 
 /**
@@ -124,36 +123,23 @@ static void monitor_pio_state(PIO pio, uint sm, uint offset, const char* label) 
  * Verify HOLD pin control works correctly
  * Based on test_hold_hlda.c approach
  */
-static void verify_hold_control(PIO pio, uint sm) {
+static void verify_hold_control(void) {
     printf("\n=== Verifying HOLD Pin Control ===\n");
 
-    // CRITICAL: RP2350 requires executing a pindirs instruction to unlock side-set pindirs
-    printf("Executing pindirs unlock sequence...\n");
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // All inputs first
-
-    // Check we can control HOLD via pindirs
+    // Check we can control HOLD as open-drain via SIO before handing pins to PIO.
     printf("Testing HOLD control:\n");
 
     // 1. HOLD as output (drives low due to pin value = 0)
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, (1u << HOLD_PIN)));
+    gpio_set_function(HOLD_PIN, GPIO_FUNC_SIO);
+    gpio_put(HOLD_PIN, 0);
+    gpio_set_dir(HOLD_PIN, GPIO_OUT);
     sleep_us(10);
     printf("  HOLD as output: pin=%d (expect 0)\n", gpio_get(HOLD_PIN));
 
     // 2. HOLD as input (floats high via pullup)
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));
+    gpio_set_dir(HOLD_PIN, GPIO_IN);
     sleep_us(10);
     printf("  HOLD as input:  pin=%d (expect 1)\n", gpio_get(HOLD_PIN));
-
-    // Verify side-set will control the correct pin
-    uint32_t pinctrl = pio->sm[sm].pinctrl;
-    uint32_t sideset_base = (pinctrl >> 10) & 0x1F;
-    printf("Side-set base pin: %u (expect %d)\n", sideset_base, HOLD_PIN);
-
-    if (sideset_base != HOLD_PIN) {
-        printf("ERROR: Side-set misconfigured!\n");
-    } else {
-        printf("Side-set configuration correct ✓\n");
-    }
 }
 
 /**
@@ -184,29 +170,19 @@ int main() {
     PIO pio = pio0;
     uint sm = 0;  // Use state machine 0
 
-    // TODO: Update test to use new split PIO architecture (dma_rw_control + dma_rw_output)
-    // The old dma_read_write.pio has been split into two programs:
-    // - dma_rw_control.pio: handles control signals
-    // - dma_rw_output.pio: handles data output
-    // This test needs to be updated to work with the new architecture
+    int outcome = pio_set_gpio_base(pio, LOWER_PIN_BASE);
+    printf("test_dma_cleaned pio_set_gpio_base outcome: %d\n", outcome);
 
-    printf("ERROR: Test needs updating for new PIO architecture\n");
-    printf("The dma_read_write.pio has been split into dma_rw_control and dma_rw_output\n");
-    return 1;
-
-    #if 0  // Commented out old code - needs rewrite
-    // Add the PIO program
-    uint offset = pio_add_program(pio, &dma_read_write_program);
+    uint offset = pio_add_program(pio, &dma_master_program);
     printf("Program loaded at offset: 0x%02x\n", offset);
-    printf("Program length: %d instructions\n", dma_read_write_program.length);
+    printf("Program length: %d instructions\n", dma_master_program.length);
 
     // Initialize the PIO state machine
     printf("Initializing PIO state machine...\n");
-    dma_read_write_program_init(pio, sm, offset, BD0_PIN);
-    #endif
+    dma_master_program_init(pio, sm, offset, BD0_PIN);
 
     // Verify HOLD control before enabling SM
-    verify_hold_control(pio, sm);
+    verify_hold_control();
 
     // Check initial state
     printf("\n=== Initial State (before enable) ===\n");

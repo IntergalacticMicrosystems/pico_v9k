@@ -24,7 +24,6 @@ pico_set_binary_type(test_clock_check no_flash)
 # Clean DMA test - Current working test for DMA read/write operations
 add_executable(test_dma_cleaned
     test_dma_cleaned.c
-    ${CMAKE_SOURCE_DIR}/pico_victor/dma.c
 )
 
 # Include directories
@@ -35,8 +34,8 @@ target_include_directories(test_dma_cleaned PRIVATE
 )
 
 # Generate PIO headers
-pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_rw_control.pio)
-pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_rw_output.pio)
+pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/board_registers.pio)
+pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_master.pio)
 
 # Link libraries
 target_link_libraries(test_dma_cleaned

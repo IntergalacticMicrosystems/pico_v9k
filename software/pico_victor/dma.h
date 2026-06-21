@@ -60,8 +60,6 @@
 
 #define UART_TX_PIN 0
 #define UART_RX_PIN_NUM 33  // UART RX pin (shared with IR_5 alternate use)
-#define ALE_CURRENT_SINK_PIN 46
-#define DEBUG_PIN 47
 
 // UART configuration (shared across files)
 #define UART_ID uart0
@@ -299,7 +297,7 @@ void enable_dma_read_irq(void);
 void disable_dma_read_irq(void);
 
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
 typedef struct {
     uint32_t sectors_checked;
     uint32_t sectors_failed;

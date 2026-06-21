@@ -251,7 +251,7 @@ static void print_uart_help(void) {
     printf("\nUART commands:\n");
     printf("  h/? : show this help\n");
     printf("  t   : dump SASI trace to UART\n");
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
     printf("  r   : dump DMA CRC trace (per-sector CRC-8)\n");
 #endif
     printf("  f   : force SASI_LOG.TXT flush now\n");
@@ -417,7 +417,7 @@ static void dump_pio0_and_pin_state(void) {
            (unsigned long)canary_intact, (unsigned long)STACK_CANARY_WORDS,
            (canary_intact < STACK_CANARY_WORDS) ? " *** OVERFLOW DETECTED ***" : "");
 
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
     printf("DMA verify: checked=%lu  errors=%lu  byte_mismatches=%lu\n",
            (unsigned long)dma_verify_stats.sectors_checked,
            (unsigned long)dma_verify_stats.sectors_failed,
@@ -466,7 +466,7 @@ static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
             printf("\nUART: dumping SASI trace\n");
             sasi_trace_dump();
             break;
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
         case 'r':
             printf("\nUART: dumping DMA CRC trace\n");
             dma_crc_trace_dump();
@@ -608,7 +608,7 @@ void initialize_uart() {
     dma_device_reset(&dma_registers);
     sasi_trace_init();  // Initialize diagnostic trace buffer
     sasi_op_timing_init();  // Initialize per-operation timing breakdown
-#ifdef VERIFY_DMA_WRITES
+#if VERIFY_DMA_WRITES
     dma_crc_trace_init();
 #endif
     printf("DMA device reset complete\n");

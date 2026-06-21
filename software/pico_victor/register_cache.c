@@ -189,11 +189,23 @@ void core1_main() {
     if (storage_init(STORAGE_BACKEND_SDCARD)) {
         int image_count = sd_storage_get_image_count();
         if (image_count > 0) {
-            const char *first_image = sd_storage_get_image_name(0);
-            if (first_image) {
-                printf("Core1: Auto-mounting '%s'\n", first_image);
-                if (!storage_mount(0, first_image, false)) {
-                    printf("Core1: failed to mount '%s' on target 0\n", first_image);
+            // Mount every discovered image on its own SASI target so the host
+            // can see more than one drive. Cap at STORAGE_MAX_TARGETS; DOS walks
+            // the bus probing each target, and unmounted targets now fail fast.
+            int mount_count = image_count;
+            if (mount_count > STORAGE_MAX_TARGETS) {
+                mount_count = STORAGE_MAX_TARGETS;
+                printf("Core1: %d images found, only mounting first %d (target limit)\n",
+                       image_count, STORAGE_MAX_TARGETS);
+            }
+            for (int t = 0; t < mount_count; t++) {
+                const char *image = sd_storage_get_image_name(t);
+                if (!image) {
+                    continue;
+                }
+                printf("Core1: Auto-mounting '%s' on target %d\n", image, t);
+                if (!storage_mount(t, image, false)) {
+                    printf("Core1: failed to mount '%s' on target %d\n", image, t);
                 }
             }
         } else {

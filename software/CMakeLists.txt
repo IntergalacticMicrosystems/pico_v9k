@@ -66,6 +66,8 @@ target_sources(dma_board PRIVATE
 
 pico_set_binary_type(dma_board default)
 
+option(VERIFY_DMA_WRITES "Enable DMA write read-back verification" OFF)
+
 # Core 1 stack is provided explicitly via multicore_launch_core1_with_stack().
 # USE_SD_STORAGE and SD_DISK_IMAGE are shared between dma_board.c and register_cache.c
 # (storage init runs on Core 1 so SDIO DMA_IRQ_1 lands on Core 1's NVIC).
@@ -73,9 +75,11 @@ target_compile_definitions(dma_board PRIVATE
     PICO_CORE1_STACK_SIZE=0
     USE_SD_STORAGE=1
     SD_DISK_IMAGE="victor.img"
-    # Uncomment to enable DMA write verification (adds ~2x overhead to writes)
-    VERIFY_DMA_WRITES=0
 )
+
+if(VERIFY_DMA_WRITES)
+    target_compile_definitions(dma_board PRIVATE VERIFY_DMA_WRITES=1)
+endif()
 
 # Generate PIO headers for cached version
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
@@ -122,11 +126,6 @@ pico_add_extra_outputs(dma_board)
 # On-device test executable (UNIT_TEST mode, no PIO bus activity)
 add_executable(dma_board_tests
     test/on_device_runner.c
-    logging.c
-    sasi.c
-    pico_victor/fifo_helpers.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/reg_queue_processor.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
 
 target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
@@ -159,9 +158,6 @@ pico_add_extra_outputs(dma_board_tests)
 add_executable(benchmark_irq
     test/benchmark_irq.c
     pico_victor/fifo_helpers.c
-    pico_victor/dma.c
-    pico_victor/register_irq_handlers.c
-    pico_victor/dma_irq_handler.c
 )
 
 target_compile_definitions(benchmark_irq PRIVATE BENCHMARK_MODE=1)
