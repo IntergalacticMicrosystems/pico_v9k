@@ -1099,6 +1099,21 @@ bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffe
         }
     }
 
+    // Only fall back to direct FujiNet access when the SD backend is NOT the
+    // authoritative source. Mirrors the write path (handle_write_sectors).
+    //
+    // Without this guard, a read to an unmounted/absent target -- e.g. DOS
+    // speculatively walking the SASI bus looking for additional drives -- would
+    // fall through to fujinet_read_sector() and block for SPI_PHASE_TIMEOUT_US
+    // (10s) waiting on a handshake that never comes when no FujiNet is present.
+    // That blows the 5s BIOS command timeout and wedges the bus. Fail fast with
+    // a zeroed buffer instead so the command completes immediately with CHECK
+    // CONDITION and the host's bus walk moves on.
+    if (storage_get_backend() == STORAGE_BACKEND_SDCARD) {
+        memset(buffer, 0, 512);
+        return false;
+    }
+
     // Fall back to FujiNet direct access if storage layer not available
     uint8_t device = DEVICE_DISK_BASE + target;
     if (!fujinet_read_sector(device, sector, buffer, 512)) {
