@@ -82,6 +82,28 @@ and reflashed. Regression results (`regression.log`, `reg_boot.png`):
   3 events on the pre-fix firmware (and the flag now provably spans the sync window)
 - Timing snapshot: sd_wr max 32.6 ms, sync max 3.9 ms, cmd max 239 ms, 0 stalls
 
+## Transfer-speed measurements (post-fix firmware, same session)
+
+Method: DOS `TIME` bracketing (hundredth-second stamps) and host-clock OCR
+polling of a cleared screen; hd_stress progress markers timed against the host
+clock. Artifacts: `speed_read2.png`, `hs_speed/`, poll transcripts.
+
+| Workload | Result |
+|---|---|
+| `COPY` 256 KB → NUL (pure sequential read) | 4.0 s DOS-clock / ~2.8–3.3 s host-clock ⇒ **~65–90 KB/s** |
+| `COPY` 256 KB file→file (read+write, 512 KB total I/O) | ~4.6 s ⇒ **~110 KB/s aggregate**; the write half added only ~1.8 s over read-only ⇒ write ≳ 100 KB/s |
+| hd_stress write phase (800 K) | 4.9 KB/s — **CPU-bound**, not disk: the 8088 pattern-fill loop dominates |
+| hd_stress read+verify phase (800 K) | 4.5 KB/s — same reason (byte-compare loop ≈ 5 KB/s on a 5 MHz 8088) |
+
+Cross-check: firmware per-sector maxima (SD read ≤3.2 ms + DMA-to-RAM ≤0.8 ms)
+imply a ~125 KB/s order-of-magnitude ceiling — consistent with the measured
+~0.1 MB/s DOS-level band. These rates are comparable to or better than the
+original Xebec/MFM subsystem, and boot-to-prompt is ~20–25 s.
+
+Caveat: hd_stress is a correctness tool, not a benchmark — its KB/s reflects
+the host CPU. A future firmware-side sector counter in the `p` dump would give
+exact sustained rates for free.
+
 ## Still open / next session
 
 - **Phase E:** stage a 2nd `.img` (operator) → verify multi-target mount and expose
