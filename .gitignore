@@ -1,0 +1,23 @@
+# Build output
+software/build/
+build/
+
+# VS Code Local History extension
+.history/
+
+# KiCad lock files
+~*.lck
+*.kicad_prl
+
+# Bench session artifacts (logs, screen grabs)
+software/bench_logs/*.png
+software/bench_logs/*.log
+software/bench_logs/*.bin
+software/bench_logs/*.exe
+software/bench_logs/*.txt
+
+# OpenWatcom build byproducts (DOS test tools)
+software/test/dos_dma_test/*.obj
+software/test/dos_dma_test/*.o
+software/test/dos_dma_test/*.exe
+software/test/dos_dma_test/*.EXE
