@@ -287,6 +287,20 @@ static bool sd_storage_init(void) {
         }
         f_closedir(&dir);
 
+        // Sort names case-insensitively so target assignment is deterministic:
+        // f_readdir() returns FAT directory order, which depends on file
+        // creation history, and target 0 is normally the boot drive.
+        for (int i = 1; i < sd_state->file_count; i++) {
+            char key[FILENAME_MAX_LENGTH];
+            strcpy(key, sd_state->file_names[i]);
+            int j = i - 1;
+            while (j >= 0 && strcasecmp(sd_state->file_names[j], key) > 0) {
+                strcpy(sd_state->file_names[j + 1], sd_state->file_names[j]);
+                j--;
+            }
+            strcpy(sd_state->file_names[j + 1], key);
+        }
+
         printf("SD Storage: Found %d disk image(s)\n", sd_state->file_count);
     }
     fatfs_guard_unlock();

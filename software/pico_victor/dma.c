@@ -327,8 +327,7 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
             break;
 
         case REG_STATUS: // 0x20 - Status register
-            // Read status information
-            value = dma->status;
+            // Status register is read-only; host writes are ignored
             break;
 
         case REG_ADDR_L: // 0x80 - DMA address low byte
@@ -440,7 +439,7 @@ void one_time_pin_setup() {
         gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         gpio_pull_down(pin); // enable pull-downs
         gpio_put(pin, 0);  // by default drive low
-        gpio_set_dir(pin, GPIO_IN); // set as output to assert HOLD/
+        gpio_set_dir(pin, GPIO_IN); // default to input (hi-Z); PIO claims direction later
         
         //printf("ontime gpio_setup %d  ", pin);
     }

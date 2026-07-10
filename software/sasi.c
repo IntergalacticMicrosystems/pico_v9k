@@ -882,11 +882,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             sasi_bus_ctrl_set(dma, new_ctrl);
         }
     }
-    sasi_in_dma_transfer = false;
 
     // If host reset during the loop, skip status/sync — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        sasi_in_dma_transfer = false;
         uint32_t elapsed = (uint32_t)(time_us_64() - cmd_start_us);
         sasi_last_cmd_us = elapsed;
         if (elapsed > sasi_max_cmd_us) sasi_max_cmd_us = elapsed;
@@ -898,6 +898,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // Sync all written sectors to persistent storage in one operation.
     // CRITICAL: check return value -- if sync fails the data never reached
     // the SD card and we must report CHECK_CONDITION to DOS.
+    // NOTE: sasi_in_dma_transfer stays set through the sync so the Core-0
+    // stuck detector doesn't false-fire during a slow f_sync (observed
+    // 70-110 ms on real SD cards); it only reads this flag for gating.
     if (any_storage_writes && transfer_ok && storage_is_mounted(target)) {
         uint64_t t_sync = time_us_64();
         if (!storage_sync(target)) {
@@ -909,6 +912,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         sasi_op_record(sync_elapsed, &sasi_op_timing.max_sync_us,
                        SASI_OP_SYNC, sector);
     }
+    sasi_in_dma_transfer = false;
 
     if (dma) {
         dma->logical_block.full = sector + blocks;

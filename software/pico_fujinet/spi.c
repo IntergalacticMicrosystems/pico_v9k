@@ -8,7 +8,7 @@
 #include "spi.h"
 #include "fujiCmd.h"
 
-#define SPI_DEBUG 1
+#define SPI_DEBUG 0
 
 #define SPI_PHASE_TIMEOUT_US 10000000
 #define VICTOR_SECTOR_COUNT_SINGLE 1
@@ -468,7 +468,9 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
+#if SPI_DEBUG
     printf("FujiNet: Read LBA %lu\n", (unsigned long)lba);
+#endif
     return true;
 }
 bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
@@ -519,7 +521,9 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         return false;
     }
 
+#if SPI_DEBUG
     printf("FujiNet: Write LBA %lu\n", (unsigned long)lba);
+#endif
     return true;
 }
 

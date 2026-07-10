@@ -636,7 +636,6 @@ void initialize_uart() {
     bool stack_overflow_reported = false;
     bool fault_info_dumped = false;
 
-    uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
         int cmd = getchar_timeout_us(0);
         if (cmd >= 0) {
