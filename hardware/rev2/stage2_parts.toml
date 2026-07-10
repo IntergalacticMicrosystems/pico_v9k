@@ -1,0 +1,167 @@
+# Stage 2 parts record for v9k_dma_rev2 (profile type1, 5 boards).
+# Generated 2026-07-10 via partbroker. type1 -> no lcsc field.
+# Vendor: Digi-Key primary; IC1/RN2/C5,C7,C9 are Mouser-only (see note fields).
+# Append these [[parts]] to project.toml at the Stage 2 gate.
+
+[[parts]]
+refs = ["U3"]
+mpn = "ESP32-S3-WROOM-1U-N16R8"
+symbol = "RF_Module:ESP32-S3-WROOM-1"
+footprint = "RF_Module:ESP32-S3-WROOM-1U"
+note = "Digi-Key/Mouser 6.76/6.90. Footprint is caller known-good -1U (u.FL); partbroker lib suggested -1 (PCB antenna)."
+
+[[parts]]
+refs = ["U4"]
+mpn = "LD1117V33"
+symbol = "Regulator_Linear:LD1117V33"
+footprint = "Package_TO_SOT_THT:TO-220-3_Vertical"
+note = "Digi-Key STMicroelectronics 1.27."
+
+[[parts]]
+refs = ["IC1"]
+mpn = "SN74LVC1G04DCKR"
+symbol = "v9k_dma_rev2:SN74LVC1G04QDCKRQ1"
+footprint = "v9k_dma_rev2:SOT65P210X110-5N"
+note = "Mouser only (genuine TI, 0.12). All-DK option: SN74LVC1G04QDCKRQ1 (rev1 part)."
+
+[[parts]]
+refs = ["D1"]
+mpn = "1N5822-TP"
+symbol = "Device:D_Schottky"
+footprint = "Diode_THT:D_DO-201AD_P12.70mm_Horizontal"
+note = "Digi-Key MCC 0.61. Caller known-good fp (12.70mm); partbroker lib suggested Diode:1N5822 / P15.24mm."
+
+[[parts]]
+refs = ["D2", "D3"]
+mpn = "1N4148"
+symbol = "Diode:1N4148"
+footprint = "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal"
+note = "Digi-Key onsemi/Diotec ~0.06."
+
+[[parts]]
+refs = ["U1-SKT"]
+mpn = "PPTC152LFBN-RC"
+symbol = "Connector_Generic:Conn_02x15_Odd_Even"
+footprint = "Connector_PinSocket_2.54mm:PinSocket_2x15_P2.54mm_Vertical"
+note = "Sullins 2x15 female socket, Digi-Key only, 1.62. Qty 2/board. Populates the U1 WeAct_RP2350B_Core_Socket footprint."
+
+[[parts]]
+refs = ["U1-SWD-SKT"]
+mpn = "PPTC041LFBN-RC"
+symbol = "Connector_Generic:Conn_01x04"
+footprint = "Connector_PinSocket_2.54mm:PinSocket_1x04_P2.54mm_Vertical"
+note = "Sullins 1x4 female socket, Digi-Key only, 0.42. Populates the U1 socket footprint (SWD pads)."
+
+[[parts]]
+refs = ["J3"]
+mpn = "DM3AT-SF-PEJM5"
+symbol = "v9k_dma_rev2:DM3AT-SF-PEJM5"
+footprint = "v9k_dma_rev2:HRS_DM3AT-SF-PEJM5"
+note = "Hirose microSD push-pull R/A SMD, Digi-Key 2.85. Symbol = rev1 embedded (pads P1-P4/SWA/SWB match footprint; stock Connector:Micro_SD_Card_Det_Hirose_DM3AT does not)."
+
+[[parts]]
+refs = ["RN1"]
+mpn = "4609X-101-473LF"
+symbol = "v9k_dma_rev2:4609X-101-473LF"
+footprint = "v9k_dma_rev2:4609X101473LF"
+note = "Bourns 47k x8 bussed SIP9, Digi-Key 0.37."
+
+[[parts]]
+refs = ["RN2"]
+mpn = "4604X-101-272LF"
+symbol = "Device:R_Network03"
+footprint = "Resistor_THT:R_Array_SIP4"
+note = "Bourns 2.7k x3 bussed SIP4, Mouser only, 0.42. All-DK option: 4605X-101-272LF (SIP5, package change)."
+
+[[parts]]
+refs = ["J4", "J5", "J6", "J7", "J8", "J9"]
+mpn = "PREC040SAAN-RC"
+symbol = "Connector_Generic:Conn_01x0N"
+footprint = "Connector_PinHeader_2.54mm:PinHeader_1x0N_P2.54mm_Vertical"
+note = "Sullins 1x40 breakaway male header, Digi-Key only, 0.49/strip. Cut per board J4=4,J5=5,J6=2,J7=8,J8=3,J9=4. 1 strip/board."
+
+[[parts]]
+refs = ["R1"]
+mpn = "RNMF14FTC330R"
+symbol = "Device:R"
+footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+note = "Stackpole 330R 1/4W axial, Digi-Key 0.10."
+
+[[parts]]
+refs = ["R2", "R3"]
+mpn = "MFR-25FRF52-10K"
+symbol = "Device:R"
+footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+note = "YAGEO 10k 1/4W axial, Digi-Key 0.10."
+
+[[parts]]
+refs = ["R5", "R6"]
+mpn = "MFR-25FTE52-4K7"
+symbol = "Device:R"
+footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+note = "YAGEO 4.7k 1/4W axial, DNP but ordered, Digi-Key 0.10."
+
+[[parts]]
+refs = ["R8"]
+mpn = "MFR-25FTE52-470R"
+symbol = "Device:R"
+footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+note = "YAGEO 470R 1/4W axial (selected, MFR-25 family), Digi-Key 0.10."
+
+[[parts]]
+refs = ["R7"]
+mpn = "MFR-25FTE52-2K2"
+symbol = "Device:R"
+footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal"
+note = "YAGEO 2.2k 1/4W axial (selected, MFR-25 family), Digi-Key 0.10."
+
+[[parts]]
+refs = ["C1"]
+mpn = "ESE227M025AG3AA"
+symbol = "Device:C_Polarized"
+footprint = "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm"
+note = "KEMET 220uF 25V electrolytic 8x11.5mm 3.5mm LS, Digi-Key 0.33."
+
+[[parts]]
+refs = ["C2", "C3", "C4", "C8"]
+mpn = "50YXJ10M5X11"
+symbol = "Device:C_Polarized"
+footprint = "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm"
+note = "Rubycon 10uF 50V electrolytic 5x11mm 2.0mm LS, Digi-Key only, 0.30."
+
+[[parts]]
+refs = ["C5", "C7", "C9"]
+mpn = "RD20B104K500A5HAND"
+symbol = "Device:C"
+footprint = "Capacitor_THT:C_Disc_D5.1mm_W3.2mm_P5.00mm"
+note = "Walsin 100nF 50V MLCC radial 5.08mm, Mouser only, 0.128. All-DK sub: KEMET C320C104K5R5TA."
+
+[[parts]]
+refs = ["C6"]
+mpn = "SR305E105ZARTR1"
+symbol = "Device:C"
+footprint = "Capacitor_THT:C_Disc_D5.1mm_W3.2mm_P5.00mm"
+note = "KYOCERA AVX 1uF 50V MLCC radial, Digi-Key 1.24 (Mouser 0.88)."
+
+[[parts]]
+refs = ["C10"]
+mpn = "C315C103K5R5TA"
+symbol = "Device:C"
+footprint = "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P2.50mm"
+note = "KEMET 10nF 50V X7R radial MLCC (selected for 'any 10nF radial'), Digi-Key 0.30."
+
+# --- Own stock / PCB feature (not sourced; exempt from sourcing gate) ---
+
+[[parts]]
+refs = ["U1"]
+mpn = "WeAct RP2350B Core Board (16MB flash + 8MB PSRAM)"
+symbol = "v9k_dma_rev2:WeAct_RP2350B_Core"
+footprint = "v9k_dma_rev2:WeAct_RP2350B_Core_Socket"
+note = "Own stock qty 5 (WeAct store / AliExpress); not carried by Digi-Key/Mouser. Socketed module. Symbol is project-local (author in Stage 3 if not yet present)."
+
+[[parts]]
+refs = ["GF1"]
+mpn = "Victor gold fingers"
+symbol = ""
+footprint = "v9k_dma_rev2:Victor_Gold_Fingers_3"
+note = "PCB edge-connector feature, no vendor part. Graphic/edge footprint only."
