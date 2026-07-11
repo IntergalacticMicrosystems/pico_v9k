@@ -21,3 +21,12 @@ software/test/dos_dma_test/*.obj
 software/test/dos_dma_test/*.o
 software/test/dos_dma_test/*.exe
 software/test/dos_dma_test/*.EXE
+
+# llm_autoroute transient artifacts (tool-made backups, sweep logs, roll files)
+hardware/*/[!.]*.pre-loop.*
+hardware/*/[!.]*.pre-route.*
+hardware/*/[!.]*.pre-place.*
+hardware/*/[!.]*.loop-m*.log
+hardware/*/[!.]*.loop.json
+hardware/*/[!.]*.failed.kicad_pcb
+hardware/*/[!.]*.roll[0-9]*

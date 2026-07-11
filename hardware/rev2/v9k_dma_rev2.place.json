@@ -1,0 +1,265 @@
+{
+  "board": "/root/sync/pico_v9k/hardware/rev2/v9k_dma_rev2.kicad_pcb",
+  "placed": 34,
+  "movable": 34,
+  "locked": 4,
+  "copper_tied": [],
+  "score": {
+    "ratsnest_mst_mm": 4064.888
+  },
+  "decoupling": [
+    {
+      "ref": "C10",
+      "ic_pad": "GF1.32",
+      "distance_mm": 17.002,
+      "budget_mm": 2.0,
+      "ok": false
+    }
+  ],
+  "violations": {
+    "decouple_over_budget": [
+      "C10"
+    ],
+    "unplaced": []
+  },
+  "per_part": [
+    {
+      "ref": "C1",
+      "x": 59.8819,
+      "y": 76.3381,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C10",
+      "x": 106.51,
+      "y": 127.5,
+      "rot": 0.0,
+      "target": "GF1.32"
+    },
+    {
+      "ref": "C11",
+      "x": 102.387,
+      "y": 61.67,
+      "rot": 90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C2",
+      "x": 61.2112,
+      "y": 84.8381,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C3",
+      "x": 118.3421,
+      "y": 53.12,
+      "rot": 180.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C4",
+      "x": 96.6102,
+      "y": 59.9387,
+      "rot": 90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C5",
+      "x": 96.9852,
+      "y": 52.6882,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C6",
+      "x": 134.941,
+      "y": 99.968,
+      "rot": -90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C7",
+      "x": 131.639,
+      "y": 69.9574,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C8",
+      "x": 89.9604,
+      "y": 60.5462,
+      "rot": 90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "C9",
+      "x": 77.1463,
+      "y": 116.4573,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "D1",
+      "x": 72.9035,
+      "y": 124.3545,
+      "rot": 180.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "D2",
+      "x": 71.8425,
+      "y": 119.0117,
+      "rot": 180.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "D3",
+      "x": 60.2225,
+      "y": 108.3917,
+      "rot": -90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "IC1",
+      "x": 86.1142,
+      "y": 115.6683,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J10",
+      "x": 127.4123,
+      "y": 52.1131,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J4",
+      "x": 111.693,
+      "y": 51.9774,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J5",
+      "x": 107.072,
+      "y": 57.2569,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J6",
+      "x": 130.1883,
+      "y": 100.6892,
+      "rot": 0.0,
+      "target": "centroid"
+    },
+    {
+      "ref": "J7",
+      "x": 115.9826,
+      "y": 95.932,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J8",
+      "x": 111.77,
+      "y": 83.88,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "J9",
+      "x": 91.0674,
+      "y": 116.0481,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "JP1",
+      "x": 120.6982,
+      "y": 100.533,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "JP2",
+      "x": 125.5632,
+      "y": 100.5255,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R1",
+      "x": 139.9543,
+      "y": 70.1606,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R2",
+      "x": 111.9037,
+      "y": 78.8293,
+      "rot": 90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R3",
+      "x": 85.8286,
+      "y": 53.5894,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R4",
+      "x": 83.55,
+      "y": 64.9603,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R7",
+      "x": 77.305,
+      "y": 127.3867,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "R8",
+      "x": 64.3126,
+      "y": 100.7998,
+      "rot": -90.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "RN1",
+      "x": 121.3528,
+      "y": 95.9106,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "RN2",
+      "x": 77.5615,
+      "y": 122.954,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "U4",
+      "x": 96.0922,
+      "y": 67.3203,
+      "rot": 0.0,
+      "target": "netmid"
+    },
+    {
+      "ref": "U5",
+      "x": 115.7203,
+      "y": 58.472,
+      "rot": 0.0,
+      "target": "netmid"
+    }
+  ]
+}

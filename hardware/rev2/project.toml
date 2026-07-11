@@ -3,7 +3,39 @@
 name = "v9k_dma_rev2"
 profile = "type1"       # hand-soldered, modules + THT (stated by human 2026-07-10)
 boards = 5              # stated by human 2026-07-10
-stage = 3               # Stage 3 gate passed 2026-07-10, re-passed after MCP23S17 rework same day: check-sch 0, lint-sch 0, emit-pcb 0 (audited: 274 pad-net checks). Stage 2 gate passed 2026-07-10 (see stage2_parts.md); previously Stage 1 gate passed: no matching blocks (both edablock
+stage = 6               # Stage 6 gate PASSED 2026-07-10: check-bom exit 0 (36 lines,
+                        # 0 errors, $107.22 est), order_bom.csv regenerated fresh
+                        # (DK $102.57 + Mouser $4.66 = $107.23). Schematic MPN fields
+                        # populated from [[parts]] (19 symbols); U1/GF1 now
+                        # exclude-from-BOM (own stock / pcb feature, manual offsets:
+                        # 5x WeAct module from stock; no purchase for GF1).
+                        # Open items for the human: vendor_split (5 Mouser lines —
+                        # all-DK alt for IC1 is SN74LVC1G04QDCKRQ1 per [[parts]]
+                        # note); 10x jumper shunts for JP1/JP2 (e.g. QPC02SXGN-RC)
+                        # not in BOM (no schematic part) — order separately.
+                        # Stage 5 gate PASSED 2026-07-10: ROUTE OK (122/122 nets,
+                        # 0 hard DRC, kicad-cli-verified) + human reviewed the render
+                        # and approved after the USB-C clearance reroute. Details in
+                        # the history below.
+                        # Stage 4b gate passed 2026-07-10: PLACE OK 33/33 movable,
+                        # 0 unplaced, netclasses intact. Needed project-local
+                        # autoroute.toml (search_radius_mm 15->40); placeroute margin
+                        # sweep: 0.5 probe failed health gate (GF1.31 starved), 1 probed
+                        # 11 unconn, 2 won (2 unconn), 3 PLACE FAIL (C9).
+                        # Stage 5 ROUTE OK 2026-07-10 (third anchor layout, U1 above
+                        # GF1; U5 unlocked by human decision and auto-placed; then
+                        # R3/R4/C8 moved 15mm left + locked for USB-C plug clearance
+                        # per human request and rerouted): roll 1 perfect. 122/122
+                        # nets, 4940.3mm track, 252 vias, pours ~60%/60%, kicad-cli
+                        # DRC independently verified 0 unconnected / 0 hard (68
+                        # cosmetic silk). U3 pad41 vias at 0.3mm drill + J3 edge
+                        # exemption (v9k_dma_rev2.kicad_dru) both held. Netclasses
+                        # intact. stage -> 5 once the human reviews the render
+                        # (v9k_dma_rev2.routed.png); then Stage 6 BOM finalize.
+                        # Attempt history: skill_feedback.md items 17-24.
+                        # Stage 4a gate audited PASS 2026-07-10 (anchors GF1/J3/U1/U3/U5
+                        # locked, closed Edge.Cuts 99x91mm, 4 power netclasses).
+                        # Stage 3 gate passed 2026-07-10, re-passed after MCP23S17 rework same day: check-sch 0, lint-sch 0, emit-pcb 0 (audited: 274 pad-net checks). Stage 2 gate passed 2026-07-10 (see stage2_parts.md); previously Stage 1 gate passed: no matching blocks (both edablock
                         # blocks are type2/JLC; this is a type1 board). All
                         # subcircuits go through Stage 2 parts + Stage 3 authoring:
                         # WeAct module socket, ESP32-S3 coprocessor, LDO rail,

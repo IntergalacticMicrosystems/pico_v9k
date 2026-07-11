@@ -119,3 +119,123 @@ JP1/JP2 ESP-flash jumpers): emit-pcb correctly reported added=2 with no
 footprint_changed noise, the pad→net dump confirmed the crossover wiring in
 seconds, and the PDF read-back caught nothing but proved cheap (~1 min).
 No changes proposed — items 9/12/13 work as written.
+
+## 15. Footprints extracted from boards can smuggle board-frame keepout zones
+Both rev-1-harvested footprints (Victor_Gold_Fingers_3, HRS_DM3AT-SF-PEJM5)
+contained `(zone ...)` keepout rule areas whose polygon points were still in
+the *donor board's absolute coordinates* (X≈264–330, Y≈195–230). Pads and
+graphics are stored footprint-local, but zones captured into a footprint keep
+whatever coordinates they had — so on the new board they rendered as
+disconnected clumps ~300 mm off the page. Harmless to DRC where they landed,
+but confusing, and if the anchor had been elsewhere they could have silently
+imposed keepouts on real copper. Fix was deleting the zones from the .pretty
+files and the embedded PCB copies.
+→ Add to the footprint-extraction recipe (item 3): after FootprintSave, check
+for `(zone` blocks in the .kicad_mod and either rebase their polygons to the
+footprint origin or delete them; a one-line sanity check (max |coord| within
+the footprint should be ≲ courtyard size) catches this class of bug.
+
+## 17. place.py default search_radius_mm=15 fails on long parts
+First placeroute run died with `PLACE FAIL: no legal position for RN1` (24.6 mm
+SIP9) / J5 at every margin — the ring search can't reach open space within
+15 mm of a crowded target, and larger courtyard margins make it worse. Fix was
+a project-local autoroute.toml with `search_radius_mm = 40.0` (documented knob,
+CLI > config). → SKILL Stage 4b should mention this first-line remedy; better,
+place.py could auto-widen the radius (or placeroute sweep it) before declaring
+PLACE FAIL.
+
+## 18. `autoroute.py --skip-freerouting --close-gaps` double-adds pours on an
+already-poured board (tool bug). Rerunning the post-route half on the
+placeroute output duplicated both GND zones (4 zones total → 2×
+`zones_intersect` hard violations) and its BD0 repair via landed co-located
+with GF1 pad 25 (2× `holes_co_located`). Net effect: same 2 unconnected,
++4 new hard violations; had to roll back to the tool's own pre-route backup.
+→ close-gaps/post-route should delete-or-skip existing pours (idempotent
+pours) and collision-check repair vias against existing holes.
+
+## 19. DRC unconnected-item distances mislead gap-repair decisions
+DRC reported the BD7 break as pad↔track "1.15 mm", which motivated the
+close-gaps attempt; close-gaps then measured the true connectivity gap as
+52.2 mm (only the grid router could attempt it). → Skill note for Stage 5
+triage: the DRC description's distance is pad-to-nearest-same-net-copper, not
+the routable gap; check the closer's own SKIP/measure lines before choosing a
+remedy.
+
+## 20. Board-setup constraints vs anchor footprints should be preflighted
+Two whole classes of Stage-5 hard DRC were knowable before any routing:
+U3's stock WROOM footprint has 0.2 mm thermal-via drills vs the board setup's
+0.3 mm min hole (×12), and J3's edge-mount microSD shield pads sit at 0.0 mm
+from Edge.Cuts vs the 0.5 mm edge clearance (×2). Both are design decisions
+(relax constraint / exclusion / footprint edit), and finding them after a
+40-minute route sweep is the most expensive possible time. → Add a Stage 4a
+gate check: scan locked footprints' pad drills and edge-adjacent pads against
+the board setup constraints; surface conflicts to the human before Stage 4b.
+
+## 21. autoroute's per-roll DRC ignores the project `.kicad_dru` — false alarms
+A `.kicad_dru` rule (`edge_clearance min 0.3mm` for J3, KiCad 10) DOES relax
+the board-setup edge clearance: kicad-cli DRC run on the project honors it
+(0 violations, verified with/without the file). But the tool's per-roll DRC
+summaries kept reporting the 2 J3 edge violations — the roll DRC evidently
+runs without the project rules context — while the same run's FINAL DRC showed
+0. Mid-run I mis-diagnosed this as "setup constraints are absolute floors"
+(they are not, at least for edge_clearance). → llm_autoroute: make roll DRC
+load the sibling .kicad_dru; skill note: judge rule exemptions only by
+kicad-cli DRC on the real project, not by roll summaries.
+
+## 22. Freerouting emits a redundant via co-located with a PTH pad
+In two independent runs freerouting changed layers exactly at GF1's PTH pad 22
+by emitting a discrete via at the pad's position → `holes_co_located` ×2. The
+via is electrically redundant (a PTH pad already joins the layers); deleting
+it clears the violations with connectivity intact (verify by DRC after). The
+close-gaps stage did the same thing once ("via-joined" on top of the pad).
+→ autoroute post-route could sweep for same-net vias co-located with PTH pads
+and delete them automatically; skill note for Stage 5 triage meanwhile.
+
+## 23. Card-edge footprints with paired SMD finger + companion PTH pads need a
+routability preflight. GF1 (rev-1 harvest) has, per finger number, the SMD
+finger pad at the edge AND a companion PTH pad 12.5 mm inboard, same pad
+number ⇒ same net ⇒ the router must bridge every pair. Two consequences hit
+Stage 5 repeatedly: (a) NC fingers form 2-pad nets literally named
+`unconnected-(GF1-IRQ-Pad16)` that freerouting must still route (and once
+plateau-failed on); (b) the pairs sit in the densest corridor, and freerouting
+plateau-left exactly one bus net (BD0/BD6/BD7 in different runs) unrouted
+GF1→U1 on the 2-layer board. The DRC "length 1.15 mm" text on the unconnected
+item is the nearest stub, NOT the real gap (~52 mm) — reinforces item 19.
+→ Stage 3/4a check: enumerate same-number multi-pad groups in big connector
+footprints, confirm intent, and flag NC-net pad pairs (route, netclass, or
+renumber) before routing.
+
+## 24. (validation) Third anchor layout routed clean on the first roll
+After two failed layouts (items 17-23), the human's third arrangement (U1
+directly above GF1, shortening the bus corridor; U5 demoted from anchor to
+placer-managed) probed fully routable at margin 1 in 10 passes and the final
+route was perfect on roll 1 (122/122, 0 hard). Placement quality dominates
+router effort by a wide margin — rolls/grid/close-gaps never rescued a bad
+corridor, while a good corridor needed none of them. → Skill note for Stage 5
+failures: after ~2 failed reroutes, the highest-value move is re-visiting
+Stage 4a anchors (especially the corridor between the two densest connectors),
+not more router knobs. Also validated: the fill-stage starved-thermal
+remediation self-healed (1 hard after fill -> 0), and the placeroute early-stop
+on a clean probe saved the rest of the sweep.
+
+## 25. Stage 2 sourcing decisions never reach the schematic — Stage 6 fails on it
+First check-bom run: 21 errors, 19 of them `no_identifier` for refs whose MPNs
+ARE recorded in project.toml [[parts]] — but check-bom (type1) resolves by the
+schematic's MPN field, and Stage 3 authoring never copied the [[parts]] MPNs
+into the symbols. The other 2 errors were the own-stock module (U1) and the
+PCB feature (GF1), which per parts-sourcing SKILL should not be BOM lines at
+all (exclude-from-BOM + manual-offset note), yet were exported. The pipeline
+has a silent seam: PROJECT_TOML.md says record MPNs in [[parts]], partbroker
+SKILL says record MPNs in schematic fields, and nothing connects them.
+→ Fix in schematic-authoring skill (Stage 3): "set each symbol's MPN property
+from project.toml [[parts]] and in_bom=no for source=stock/pcb-feature parts"
+— or better, gensch/SchBuilder grows a set_part_fields(project_toml) helper;
+plus a Stage 3 lint that cross-checks symbol MPN fields against [[parts]].
+
+## 16. Sub-stage gates (4a/4b) don't fit the integer `stage` field
+PROJECT_TOML.md defines `stage` as an integer ("highest stage number whose
+gate passed", advances by exactly one), but SKILL.md splits Stage 4 into two
+gates (4a anchors/outline, 4b placement). After 4a passed there was no legal
+way to record it — worked around with a comment, bumping to 4 only after 4b's
+PLACE OK. → Either spec this convention in PROJECT_TOML.md ("stage = 4 means
+both 4a and 4b passed; record 4a in a comment") or allow `stage = "4a"`.

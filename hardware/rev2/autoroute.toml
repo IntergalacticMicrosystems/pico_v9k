@@ -1,0 +1,69 @@
+# llm_autoroute default policy. Electrical rules (widths/clearances/vias)
+# do NOT live here — they live in the board's netclasses (.kicad_pro), which
+# the DSN export hands to Freerouting.
+
+# [preflight]
+# allow_default_only = true   # permit a board whose nets ALL resolve to the
+#                             # Default netclass; normally refused because it
+#                             # is the signature of a wiped/regenerated
+#                             # .kicad_pro (false-ROUTE-OK hazard)
+# skip_routability = true     # downgrade the geometric routability ERRORS
+#                             # (LLM_GUIDE §7.1 pad-entry / §7.2 hole rules)
+#                             # to warnings — only for a proven false positive
+
+# [rolls]
+# count = 1        # best-of-N (LLM_GUIDE §7.3): run Freerouting N times from
+#                  # the same stripped/exported state and keep the roll with the
+#                  # fewest unconnected. 1 = today's single-roll behavior. On a
+#                  # dense board use ~4-6; a fast plateau stops the rolls early.
+#                  # CLI --rolls N overrides this.
+
+# [close_gaps]
+# enabled = false  # after routing, close residual same-net gaps deterministically
+#                  # (via seams + short bridges, self-checked + rolled back on any
+#                  # short; LLM_GUIDE §7.5). CLI --close-gaps overrides.
+# grid = false     # also run the last-resort grid router for gaps the seam/bridge
+#                  # closers can't reach (implies enabled). CLI --grid overrides.
+
+# [placeroute]
+# margins = [0.5, 1.0, 2.0, 3.0]  # ascending routability sweep (placeroute.py):
+#                  # place at each margin, probe-route it (--rolls 1), score by
+#                  # metrics, then full-route the winner. Smaller margin = tighter
+#                  # decoupling; larger = more routing room. CLI --margins overrides.
+# probe_passes = 10   # freerouting max passes per PROBE route. Escape hatch: raise
+#                     # it if probes chronically under-route and mis-rank the
+#                     # margins. CLI --probe-passes overrides.
+# probe_timeout_s = 900  # per-probe freerouting timeout. CLI --probe-timeout-s.
+# rolls = 6        # best-of-N for the FINAL route only (probes are always 1).
+#                  # CLI --rolls overrides.
+
+[place]
+# deterministic footprint placer (place.py) — arranges UNLOCKED parts around
+# the locked anchors, driven by <board>.constraints.json. CLI > config > these.
+margin_mm = 0.5           # courtyard bbox inflation for legality/collision
+step_mm = 0.5             # grid ring-search pitch around each part's target
+search_radius_mm = 40.0   # max ring-search reach (decoupling caps report
+                          # over-budget past their constraints max_distance_mm)
+refine_passes = 2         # greedy total-MST sweeps; strict improvement only
+
+[pour]
+net = "GND"
+layers = ["F.Cu", "B.Cu"]
+clearance_mm = 0.3
+min_width_mm = 0.2
+thermal_gap_mm = 0.4
+thermal_bridge_mm = 0.5
+island_removal = "always"
+
+[stitch]
+pitch_mm = 5.0
+via_diameter_mm = 0.6
+via_drill_mm = 0.3
+edge_margin_mm = 1.0
+copper_margin_mm = 0.05    # extra slack beyond clearance when dodging copper
+
+[freerouting]
+max_passes = 200
+timeout_s = 1800
+# -da disables telemetry; unknown flags are warned about but harmless
+extra_args = ["-da"]

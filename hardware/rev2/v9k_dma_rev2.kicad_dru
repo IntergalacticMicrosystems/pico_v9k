@@ -1,0 +1,4 @@
+(version 1)
+(rule "J3 edge-mount microSD"
+  (condition "A.memberOfFootprint('J3')")
+  (constraint edge_clearance (min 0.3mm)))

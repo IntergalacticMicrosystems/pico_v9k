@@ -1,0 +1,576 @@
+{
+  "board": "/root/sync/pico_v9k/hardware/rev2/v9k_dma_rev2.kicad_pcb",
+  "nets": {
+    "gnd": [
+      "GND"
+    ],
+    "power": [
+      "-12V"
+    ]
+  },
+  "footprints": [
+    {
+      "ref": "C1",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C10",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C11",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C2",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C3",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C4",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C5",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C6",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C7",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C8",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "C9",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "D1",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "D2",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "D3",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "GF1",
+      "locked": true,
+      "pad_count": 100,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "IC1",
+      "locked": false,
+      "pad_count": 5,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J10",
+      "locked": false,
+      "pad_count": 8,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J3",
+      "locked": true,
+      "pad_count": 14,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J4",
+      "locked": false,
+      "pad_count": 7,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J5",
+      "locked": false,
+      "pad_count": 5,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J6",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J7",
+      "locked": false,
+      "pad_count": 8,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J8",
+      "locked": false,
+      "pad_count": 3,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "J9",
+      "locked": false,
+      "pad_count": 4,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "JP1",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "JP2",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "R1",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "R2",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "R3",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "R4",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "R7",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "R8",
+      "locked": false,
+      "pad_count": 2,
+      "is_2pin_passive": true,
+      "rotation_free": true
+    },
+    {
+      "ref": "RN1",
+      "locked": false,
+      "pad_count": 9,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "RN2",
+      "locked": false,
+      "pad_count": 4,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "U1",
+      "locked": true,
+      "pad_count": 64,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "U3",
+      "locked": true,
+      "pad_count": 62,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "U4",
+      "locked": false,
+      "pad_count": 3,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    },
+    {
+      "ref": "U5",
+      "locked": false,
+      "pad_count": 28,
+      "is_2pin_passive": false,
+      "rotation_free": false
+    }
+  ],
+  "decoupling": [
+    {
+      "ref": "C10",
+      "power_net": "-12V",
+      "gnd_net": "GND",
+      "ic_pins": [
+        {
+          "ref": "GF1",
+          "pad": "32",
+          "pin_name": null,
+          "pin_type": null
+        },
+        {
+          "ref": "GF1",
+          "pad": "32",
+          "pin_name": null,
+          "pin_type": null
+        }
+      ],
+      "max_distance_mm": 2.0
+    }
+  ],
+  "affinity": [
+    {
+      "ref": "C1",
+      "owner": "U1",
+      "shared_nets": [
+        "+5V_RAIL"
+      ]
+    },
+    {
+      "ref": "C11",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C2",
+      "owner": "U1",
+      "shared_nets": [
+        "+5V_RAIL"
+      ]
+    },
+    {
+      "ref": "C3",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C4",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C5",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C6",
+      "owner": "U3",
+      "shared_nets": [
+        "ESP_EN"
+      ]
+    },
+    {
+      "ref": "C7",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C8",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI"
+      ]
+    },
+    {
+      "ref": "C9",
+      "owner": "U1",
+      "shared_nets": [
+        "3V3_WEACT"
+      ]
+    },
+    {
+      "ref": "D1",
+      "owner": "GF1",
+      "shared_nets": [
+        "VICTOR_5V"
+      ]
+    },
+    {
+      "ref": "D2",
+      "owner": "GF1",
+      "shared_nets": [
+        "ALE"
+      ]
+    },
+    {
+      "ref": "D3",
+      "owner": "R8",
+      "shared_nets": [
+        "ALE_CLAMP"
+      ]
+    },
+    {
+      "ref": "IC1",
+      "owner": "U1",
+      "shared_nets": [
+        "3V3_WEACT",
+        "RUN"
+      ]
+    },
+    {
+      "ref": "J10",
+      "owner": "U5",
+      "shared_nets": [
+        "+3V3_PERI",
+        "XGPIO_A7",
+        "XGPIO_B3",
+        "XGPIO_B4",
+        "XGPIO_B5",
+        "XGPIO_B6",
+        "XGPIO_B7"
+      ]
+    },
+    {
+      "ref": "J4",
+      "owner": "U5",
+      "shared_nets": [
+        "+3V3_PERI",
+        "OLED_CS",
+        "OLED_DC",
+        "OLED_RST",
+        "SPI1_MOSI",
+        "SPI1_SCK"
+      ]
+    },
+    {
+      "ref": "J5",
+      "owner": "U5",
+      "shared_nets": [
+        "+3V3_PERI",
+        "ENC_A",
+        "ENC_B",
+        "ENC_SW"
+      ]
+    },
+    {
+      "ref": "J6",
+      "owner": "R1",
+      "shared_nets": [
+        "ACT_LED"
+      ]
+    },
+    {
+      "ref": "J7",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI",
+        "ESP_EN",
+        "ESP_IO0",
+        "ESP_RXD0",
+        "ESP_TXD0",
+        "ESP_USB_D+",
+        "ESP_USB_D-"
+      ]
+    },
+    {
+      "ref": "J8",
+      "owner": "U1",
+      "shared_nets": [
+        "UART0_RX",
+        "UART0_TX"
+      ]
+    },
+    {
+      "ref": "J9",
+      "owner": "U1",
+      "shared_nets": [
+        "3V3_WEACT",
+        "SWCLK",
+        "SWDIO"
+      ]
+    },
+    {
+      "ref": "JP1",
+      "owner": "U1",
+      "shared_nets": [
+        "UART0_TX"
+      ]
+    },
+    {
+      "ref": "JP2",
+      "owner": "U1",
+      "shared_nets": [
+        "UART0_RX"
+      ]
+    },
+    {
+      "ref": "R1",
+      "owner": "U5",
+      "shared_nets": [
+        "LED_DRV"
+      ]
+    },
+    {
+      "ref": "R2",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI",
+        "ESP_EN"
+      ]
+    },
+    {
+      "ref": "R3",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI",
+        "ESP_IO0"
+      ]
+    },
+    {
+      "ref": "R4",
+      "owner": "U5",
+      "shared_nets": [
+        "+3V3_PERI",
+        "MCP_RESET"
+      ]
+    },
+    {
+      "ref": "R7",
+      "owner": "GF1",
+      "shared_nets": [
+        "ALE"
+      ]
+    },
+    {
+      "ref": "R8",
+      "owner": "U1",
+      "shared_nets": [
+        "+5V_RAIL"
+      ]
+    },
+    {
+      "ref": "RN1",
+      "owner": "J3",
+      "shared_nets": [
+        "+3V3_PERI",
+        "SD_CS",
+        "SD_DAT1",
+        "SD_DAT2",
+        "SPI1_MISO",
+        "SPI1_MOSI",
+        "SPI1_SCK"
+      ]
+    },
+    {
+      "ref": "RN2",
+      "owner": "U1",
+      "shared_nets": [
+        "+5V_RAIL",
+        "DT_R",
+        "RD",
+        "WR"
+      ]
+    },
+    {
+      "ref": "U4",
+      "owner": "U1",
+      "shared_nets": [
+        "+5V_RAIL"
+      ]
+    },
+    {
+      "ref": "U5",
+      "owner": "U3",
+      "shared_nets": [
+        "+3V3_PERI",
+        "ESP_DRDY",
+        "ESP_EN",
+        "ESP_IO0",
+        "SPI1_MISO",
+        "SPI1_MOSI",
+        "SPI1_SCK"
+      ]
+    }
+  ]
+}
