@@ -200,6 +200,7 @@ note = "Microchip 16-bit SPI expander, DIP-28 300mil, Digi-Key 1.78 (also 1 in o
 [[parts]]
 refs = ["U1"]
 mpn = "WeAct RP2350B Core Board (16MB flash + 8MB PSRAM)"
+source = "stock"
 symbol = "v9k_dma_rev2:WeAct_RP2350B_Core"
 footprint = "v9k_dma_rev2:WeAct_RP2350B_Core_Socket"
 note = "Own stock qty 5 (WeAct store / AliExpress); not carried by Digi-Key/Mouser. Socketed module. Symbol is project-local (author in Stage 3 if not yet present)."
@@ -207,6 +208,7 @@ note = "Own stock qty 5 (WeAct store / AliExpress); not carried by Digi-Key/Mous
 [[parts]]
 refs = ["GF1"]
 mpn = "Victor gold fingers"
+source = "pcb-feature"
 symbol = ""
 footprint = "v9k_dma_rev2:Victor_Gold_Fingers_3"
 note = "PCB edge-connector feature, no vendor part. Graphic/edge footprint only."

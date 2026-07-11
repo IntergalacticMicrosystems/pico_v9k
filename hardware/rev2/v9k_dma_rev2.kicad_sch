@@ -4227,6 +4227,9 @@
     (property "Note" "PCB edge connector; fingers 15 (NMI), 16 (IRQ), 34 (+12V) NC - same as rev 1" (id 4) (at 71.12 180.34 0)
       (effects (font (size 1.27 1.27)) hide)
     )
+    (property "MPN" "Victor gold fingers" (id 5) (at 71.12 180.34 0)
+      (effects (font (size 1.0 1.0)) hide)
+    )
     (instances
       (project "v9k_dma_rev2"
         (path "/083c8a46-d1d7-9d6d-22ba-115081c6c646"
