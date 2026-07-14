@@ -32,9 +32,11 @@ The RP2350 is 5 V tolerant on the GPIOs used here, so no level shifting is requi
 - Robust storage path: FatFS with retry + remount recovery, write-sync with
   CHECK CONDITION reporting, DMA timeout/abort recovery (survives a host reset
   mid-transfer)
-- Non-blocking diagnostics on **UART0, TX=GPIO0 / RX=GPIO33, 230400 baud**, with an
-  interactive console: `h` help, `t` SASI trace, `p` PIO/pin/timing dump, `i` IRQ
-  trace, `c` HardFault info, `f`/`a` log flush, `r` DMA CRC trace (VERIFY_DMA_WRITES builds)
+- Non-blocking diagnostics (logs only) on **UART0, TX=GPIO0 / RX=GPIO33, 115200 baud**:
+  init banner, SD scan, SASI/PIO/timing/IRQ dumps (auto-emitted by the stuck detector),
+  HardFault capture. The interactive console moved to **USB CDC** (micro_tui REPL +
+  full-screen menu; commands `ls status mount eject peek wifi diag menu help`, every
+  REPL reply ends `OK`/`ERR`). See `console/` and `MGMT_CONSOLE_PLAN.md`.
 
 ## Building the Firmware
 Prerequisites: CMake, arm-none-eabi toolchain, the Pico SDK, and
@@ -63,7 +65,7 @@ openocd -f interface/cmsis-dap.cfg -c "adapter speed 5000" -f target/rp2350.cfg 
    root. Additional images become additional SASI targets (alphabetical order).
 4. **Power on.** The RP2350 mounts the SD, auto-mounts images, then serves the DMA
    register window at EF300h. Give it ~5 s after reset before booting the Victor.
-5. **Monitor the UART** (230400) — you should see the init banner, SD scan,
+5. **Monitor the UART** (115200) — you should see the init banner, SD scan,
    per-target mount lines, and `Core1: Storage ready`.
 
 If the Victor fails to start DMA transfers, double-check HOLD/HLDA wiring and confirm READY is initialized with `pio_gpio_init()` (the PIO stalls forever otherwise).

@@ -26,6 +26,13 @@ int sd_storage_get_image_count(void);
 // Get the filename of a discovered disk image by index
 const char* sd_storage_get_image_name(int index);
 
+// Walk the SD root directory for *.img files, invoking emit(ctx, name, size)
+// for each (size in bytes). No-op if the SD backend is not initialized (no
+// card): the console then lists FujiNet images only. Blocks on FatFS/SPI, so
+// call only on core 1 (the storage core). See console/console_ops.c.
+void sd_storage_list_images(void (*emit)(void *ctx, const char *name, unsigned size),
+                            void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

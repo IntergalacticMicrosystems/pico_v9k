@@ -62,8 +62,10 @@
 #define UART_RX_PIN_NUM 33  // UART RX pin (shared with IR_5 alternate use)
 
 // UART configuration (shared across files)
+// UART0 carries the diag/log stream only; the interactive console moved to the
+// USB CDC micro_tui REPL/menu (see console/tui.c). 115200 8N1.
 #define UART_ID uart0
-#define BAUD_RATE 230400
+#define BAUD_RATE 115200
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1

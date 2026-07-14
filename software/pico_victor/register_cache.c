@@ -18,6 +18,7 @@
 #include "register_irq_handlers.h"
 #include "dma_irq_handler.h"
 #include "fifo_helpers.h"
+#include "mgmt_chan.h"
 #include "logging.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
@@ -155,6 +156,15 @@ void core1_main() {
     cached_regs.values[0x30] = 0;  // Status alias
     cached_regs.values[REG_DATA] = 0xFF;
     cached_regs.values[REG_CONTROL] = 0;
+
+    // Host management/control channel: bind mgmt_chan's read shadows onto the
+    // register-cache cells the ISR read-prefetch path serves (0x40 CMD echo,
+    // 0x50 STATUS, 0x60 RESP). Seeds them to 0xFF / 0xD0(sig) / 0x00. Must run
+    // after dma_defer_init()'s global 0xFF fill; warm_caches() below and the
+    // SASI reset paths never touch these cells.
+    mgmt_chan_bind_cells(&cached_regs.values[MGMT_CHAN_CMD],
+                         &cached_regs.values[MGMT_CHAN_STATUS],
+                         &cached_regs.values[MGMT_CHAN_RESP]);
 
     // Pre-warm the caches for both IRQ handlers
     warm_caches();

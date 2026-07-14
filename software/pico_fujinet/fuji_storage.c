@@ -5,7 +5,7 @@
  *
  * Execution contract: every vtable op BLOCKS on SPI1 and must run on core 1
  * (same as SD). Console-initiated ops reach here only via the core-1 mailbox
- * (fuji_console.c) — never call these from core 0 directly. SASI target N maps
+ * (console/console_ops.c) — never call these from core 0 directly. SASI target N maps
  * to ESP device slot N (device ID 0x31+N).
  */
 

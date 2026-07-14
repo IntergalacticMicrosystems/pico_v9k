@@ -14,7 +14,8 @@ Prepared 2026-07-09.
 
 | Interface | Path / value | Notes |
 |---|---|---|
-| **Diag UART (firmware console)** | `/dev/serial/by-id/usb-Raspberry_Pi_Debugprobe_on_RP2350-Zero__CMSI_BA8296921F814583-if01` (currently `ttyACM1`) | **230400 8N1**, *not* 115200. Wired to PGA2350 **GPIO0 (TX) / GPIO33 (RX)** = firmware `UART0`. Interactive command console (see §Appendix A). |
+| **Diag UART (logs)** | `/dev/serial/by-id/usb-Raspberry_Pi_Debugprobe_on_RP2350-Zero__CMSI_BA8296921F814583-if01` (currently `ttyACM1`) | **115200 8N1** (was 230400). Wired to PGA2350 **GPIO0 (TX) / GPIO33 (RX)** = firmware `UART0`. **Logs only now** — the interactive console moved to USB CDC (row below). Auto stuck/trace dumps still appear here. |
+| **Management console** | the card's **USB-C** (rev1 routes USB_DP/DM there), a CDC-ACM node (`/dev/serial/by-id/usb-IGM_Victor_9000_DMA_Hard-Disk_Emulator_*-if00`) | **micro_tui** REPL (`v9k> `, replies end `OK`/`ERR`) + `menu`. Commands: `ls status mount eject peek wifi diag menu help`. Raw TinyUSB (stdio_usb off). |
 | **SWD / flash** | same debug probe, **CMSIS-DAP** interface (if00, no tty node) | `openocd 0.12.0` + `picotool` both installed. |
 | **Remote control (Victor kbd/screen/reset)** | `/dev/serial/by-id/usb-IGM_Victor_9000_Remote_Control_2600A48D424FB2F8-if00` (`ttyACM0`) | Drive via `…/Victor9000-Development-Private/victor9k_remote_control/host/.venv/bin/python host/remotectl.py --dev <by-id> <cmd>`. Always pin `--dev` (analyzer board shares VID/PID). |
 | **Storage** | SD card over **SPI1**, `*.img` files (case-insensitive), up to **8 SASI targets** | Boot drive = **target 0**. FujiNet-over-SPI is only a *fallback* if SD init fails. |
@@ -22,8 +23,10 @@ Prepared 2026-07-09.
 
 **Three gotchas that will bite immediately**
 
-1. **Baud is 230400** and the console is the debug-probe's **if01** node. Never
-   `cat` the port (hangs the shell, BENCH §2).
+1. **UART0 baud is 115200** (was 230400) and it is now a **log stream only** on
+   the debug-probe's **if01** node. Never `cat` the port (hangs the shell,
+   BENCH §2). The interactive console moved to the card's **USB-C CDC** (micro_tui
+   REPL/menu) — drive it there, not on the UART.
 2. **ONE reader per port, ever.** The diag console is both a log source and an
    interactive command interface — do NOT run a background `dd` logger and then
    open a second connection to send `h`/`t`/`p`. Two readers = the classic
@@ -98,9 +101,9 @@ PY=/root/vidcap/host/.venv/bin/python3   # has pyserial (BENCH §7)
 ```
 
 ```python
-# diaglog.py <dev> <logfile> — sole port owner; type a char + Enter to send it
+# diaglog.py <dev> <logfile> — sole port owner (UART0 is log-only now)
 import serial, sys, threading
-s = serial.Serial(sys.argv[1], 230400, timeout=0.2)
+s = serial.Serial(sys.argv[1], 115200, timeout=0.2)
 f = open(sys.argv[2], 'ab', buffering=0)
 def rx():
     while True:

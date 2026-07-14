@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <ctype.h>
 
 
 #include "pico/stdlib.h"
@@ -21,7 +20,8 @@
 #include "pico_storage/fatfs_guard.h"
 #include "pico_storage/storage.h"
 #include "pico_fujinet/fuji_blkdev.h"
-#include "pico_fujinet/fuji_console.h"
+#include "console/tui.h"
+#include "console/mgmt_con.h"
 #include <stdlib.h>
 
 // USE_SD_STORAGE and SD_DISK_IMAGE are provided by CMakeLists.txt
@@ -197,44 +197,39 @@ void __attribute__((used, naked)) isr_hardfault(void) {
     );
 }
 
-// Dump captured HardFault info over UART.  Safe to call from Core 0
-// even while Core 1 is stuck in the LED blink loop above.
-static void dump_fault_info(void) {
+/* Dump captured HardFault info to the diag UART. Reads only the fault_info
+ * struct (memory), so it is safe from core 0 even while core 1 is stuck in the
+ * HardFault blink loop. Reached via the console 'diag' command. */
+void dma_board_dump_fault_info(void) {
     if (fault_info.valid != FAULT_INFO_MAGIC) {
-        printf("No HardFault recorded.\n");
+        printf("diag: no HardFault recorded\n");
         return;
     }
-
     printf("\n=== HARDFAULT INFO ===\n");
     printf("Core %lu faulted\n", (unsigned long)fault_info.core_id);
     printf("PC   = 0x%08lX  (faulting instruction)\n", (unsigned long)fault_info.pc);
-    printf("LR   = 0x%08lX  (return address)\n", (unsigned long)fault_info.lr);
-    printf("SP   = 0x%08lX\n", (unsigned long)fault_info.sp);
+    printf("LR   = 0x%08lX  SP = 0x%08lX\n",
+           (unsigned long)fault_info.lr, (unsigned long)fault_info.sp);
     printf("R0=0x%08lX R1=0x%08lX R2=0x%08lX R3=0x%08lX\n",
            (unsigned long)fault_info.r0, (unsigned long)fault_info.r1,
            (unsigned long)fault_info.r2, (unsigned long)fault_info.r3);
-    printf("R12=0x%08lX  xPSR=0x%08lX\n",
-           (unsigned long)fault_info.r12, (unsigned long)fault_info.xpsr);
-    printf("EXC_RETURN=0x%08lX (%s)\n",
+    printf("R12=0x%08lX  xPSR=0x%08lX  EXC_RETURN=0x%08lX (%s)\n",
+           (unsigned long)fault_info.r12, (unsigned long)fault_info.xpsr,
            (unsigned long)fault_info.exc_return,
            (fault_info.exc_return & 0x4) ? "PSP/Thread" : "MSP/Handler");
-
     uint32_t cfsr = fault_info.cfsr;
     printf("CFSR = 0x%08lX\n", (unsigned long)cfsr);
-    // MemManage faults (bits 0-7)
     if (cfsr & 0x01) printf("  IACCVIOL: Instruction access violation\n");
     if (cfsr & 0x02) printf("  DACCVIOL: Data access violation\n");
     if (cfsr & 0x08) printf("  MUNSTKERR: MemManage on unstacking\n");
     if (cfsr & 0x10) printf("  MSTKERR: MemManage on stacking\n");
     if (cfsr & 0x80) printf("  MMARVALID: MMFAR = 0x%08lX\n", (unsigned long)fault_info.mmfar);
-    // Bus faults (bits 8-15)
     if (cfsr & 0x0100) printf("  IBUSERR: Instruction bus error\n");
     if (cfsr & 0x0200) printf("  PRECISERR: Precise data bus error\n");
     if (cfsr & 0x0400) printf("  IMPRECISERR: Imprecise data bus error\n");
     if (cfsr & 0x0800) printf("  UNSTKERR: BusFault on unstacking\n");
     if (cfsr & 0x1000) printf("  STKERR: BusFault on stacking\n");
     if (cfsr & 0x8000) printf("  BFARVALID: BFAR = 0x%08lX\n", (unsigned long)fault_info.bfar);
-    // Usage faults (bits 16-31)
     if (cfsr & 0x010000) printf("  UNDEFINSTR: Undefined instruction\n");
     if (cfsr & 0x020000) printf("  INVSTATE: Invalid state (Thumb bit)\n");
     if (cfsr & 0x040000) printf("  INVPC: Invalid PC load\n");
@@ -242,29 +237,10 @@ static void dump_fault_info(void) {
     if (cfsr & 0x100000) printf("  STKOF: Stack overflow (ARMv8-M)\n");
     if (cfsr & 0x01000000) printf("  UNALIGNED: Unaligned access\n");
     if (cfsr & 0x02000000) printf("  DIVBYZERO: Divide by zero\n");
-
     printf("HFSR = 0x%08lX", (unsigned long)fault_info.hfsr);
     if (fault_info.hfsr & (1u << 30)) printf("  FORCED");
     if (fault_info.hfsr & (1u << 1))  printf("  VECTTBL");
-    printf("\n");
-
-    printf("=== END HARDFAULT INFO ===\n\n");
-}
-
-static void print_uart_help(void) {
-    printf("\nUART commands:\n");
-    printf("  h/? : show this help\n");
-    printf("  t   : dump SASI trace to UART\n");
-#if VERIFY_DMA_WRITES
-    printf("  r   : dump DMA CRC trace (per-sector CRC-8)\n");
-#endif
-    printf("  f   : force SASI_LOG.TXT flush now\n");
-    printf("  a   : toggle automatic log flush\n");
-    printf("  p   : PIO0 state + XACK/EXTIO/CLK5/READY pin dump\n");
-    printf("  i   : fast IRQ DATA transition trace dump\n");
-    printf("  c   : dump HardFault crash info (if captured)\n");
-    printf("  F   : enter FujiNet bench console (ping/status/ls/mount/wifi; BENCH ONLY, host idle)\n");
-    printf("\n");
+    printf("\n=== END HARDFAULT INFO ===\n\n");
 }
 
 static void dump_pio0_and_pin_state(void) {
@@ -452,168 +428,6 @@ static void dump_pio0_and_pin_state(void) {
     printf("=== END PIO0 STATE ===\n\n");
 }
 
-/* FujiNet bench console (the 'F' command). A small line-mode shell on core 0.
- * BENCH ONLY: every op is handed to core 1 via the fuji_console mailbox (ALL
- * SPI1 traffic must stay on core 1, off the SD burst path), and core 1 BLOCKS
- * for the duration of each ESP transaction — so only run this while the host is
- * idle. No direct fuji_* SPI calls happen from core 0. */
-static void fuji_shell_help(void) {
-    printf("FujiNet console commands:\n");
-    printf("  ping                 link liveness + DRDY + WiFi state\n");
-    printf("  status               link/DRDY, WiFi, and per-target mounts\n");
-    printf("  ls                   list *.img on the FujiNet TNFS host\n");
-    printf("  mount <target> <file>  mount server <file> as SASI <target>\n");
-    printf("  unmount <target>     unmount a SASI target\n");
-    printf("  wifi                 show stored SSID + link state\n");
-    printf("  wifi <ssid> <pass>   join/persist a network (blocks seconds)\n");
-    printf("  scan                 scan for networks (blocks seconds)\n");
-    printf("  help | ?             this help\n");
-    printf("  exit | q             leave the FujiNet console\n");
-}
-
-// Blocking line reader with echo + backspace. Core 0 only; the shell owns the
-// console while it runs (the main loop's non-blocking reader is not active).
-static void fuji_read_line(char *buf, size_t cap) {
-    size_t n = 0;
-    for (;;) {
-        int c = getchar();
-        if (c == '\r' || c == '\n') { printf("\r\n"); break; }
-        if (c == 0x08 || c == 0x7F) {          // backspace / DEL
-            if (n > 0) { n--; printf("\b \b"); }
-            continue;
-        }
-        if (c >= 32 && c < 127 && n + 1 < cap) {
-            buf[n++] = (char)c;
-            putchar(c);                        // echo
-        }
-    }
-    buf[n < cap ? n : cap - 1] = '\0';
-}
-
-static void fuji_submit(fuji_console_op_t op, uint8_t target,
-                        const char *a1, const char *a2) {
-    fuji_console_submit(op, target, a1, a2, fuji_console_op_timeout_ms(op));
-}
-
-static void fuji_console_shell(void) {
-    printf("\nFujiNet console (bench tool). WARNING: long ops block core 1 while\n");
-    printf("it talks to the ESP over the shared SPI bus -- run only while the host\n");
-    printf("is idle. Type 'help' for commands, 'exit' or 'q' to leave.\n");
-
-    char line[160];
-    for (;;) {
-        printf("fuji> ");
-        fuji_read_line(line, sizeof(line));
-
-        // Tokenize (single-threaded console, strtok is fine).
-        char *argv[4];
-        int argc = 0;
-        for (char *tok = strtok(line, " \t"); tok && argc < 4; tok = strtok(NULL, " \t")) {
-            argv[argc++] = tok;
-        }
-        if (argc == 0) continue;
-
-        const char *cmd = argv[0];
-        if (!strcmp(cmd, "exit") || !strcmp(cmd, "q")) {
-            break;
-        } else if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) {
-            fuji_shell_help();
-        } else if (!strcmp(cmd, "ping")) {
-            fuji_submit(FCON_PING, 0, NULL, NULL);
-        } else if (!strcmp(cmd, "status")) {
-            fuji_submit(FCON_STATUS, 0, NULL, NULL);
-        } else if (!strcmp(cmd, "ls")) {
-            fuji_submit(FCON_LS, 0, NULL, NULL);
-        } else if (!strcmp(cmd, "scan")) {
-            fuji_submit(FCON_SCAN, 0, NULL, NULL);
-        } else if (!strcmp(cmd, "mount")) {
-            if (argc < 3) { printf("usage: mount <target> <file>\n"); continue; }
-            int t = atoi(argv[1]);
-            if (t < 0 || t >= STORAGE_MAX_TARGETS) {
-                printf("target must be 0-%d\n", STORAGE_MAX_TARGETS - 1); continue;
-            }
-            fuji_submit(FCON_MOUNT, (uint8_t)t, argv[2], NULL);
-        } else if (!strcmp(cmd, "unmount")) {
-            if (argc < 2) { printf("usage: unmount <target>\n"); continue; }
-            int t = atoi(argv[1]);
-            if (t < 0 || t >= STORAGE_MAX_TARGETS) {
-                printf("target must be 0-%d\n", STORAGE_MAX_TARGETS - 1); continue;
-            }
-            fuji_submit(FCON_UNMOUNT, (uint8_t)t, NULL, NULL);
-        } else if (!strcmp(cmd, "wifi")) {
-            if (argc == 1) {
-                fuji_submit(FCON_WIFI_GET, 0, NULL, NULL);
-            } else if (argc >= 3) {
-                fuji_submit(FCON_WIFI_SET, 0, argv[1], argv[2]);
-            } else {
-                printf("usage: wifi | wifi <ssid> <pass>\n");
-            }
-        } else {
-            printf("unknown command '%s' (type 'help')\n", cmd);
-        }
-    }
-    printf("(leaving FujiNet console)\n");
-}
-
-static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
-    if (raw_ch < 0 || !auto_flush_enabled) {
-        return;
-    }
-
-    if (raw_ch == '\r' || raw_ch == '\n') {
-        return;
-    }
-
-    // 'F' (uppercase) enters the FujiNet bench console; check it before the
-    // tolower() fold below, where lowercase 'f' is already the SASI-log flush.
-    if (raw_ch == 'F') {
-        fuji_console_shell();
-        return;
-    }
-
-    char ch = (char)tolower(raw_ch);
-    switch (ch) {
-        case 'h':
-        case '?':
-            print_uart_help();
-            break;
-        case 't':
-            printf("\nUART: dumping SASI trace\n");
-            sasi_trace_dump();
-            break;
-#if VERIFY_DMA_WRITES
-        case 'r':
-            printf("\nUART: dumping DMA CRC trace\n");
-            dma_crc_trace_dump();
-            break;
-#endif
-        case 'f':
-            printf("\nUART: forcing SASI log flush\n");
-            sasi_log_flush_now();
-            break;
-        case 'a':
-            *auto_flush_enabled = !*auto_flush_enabled;
-            printf("\nUART: automatic SASI log flush %s\n",
-                   *auto_flush_enabled ? "ENABLED" : "DISABLED");
-            break;
-        case 'p':
-            dump_pio0_and_pin_state();
-            break;
-        case 'i':
-            register_irq_trace_dump("UART request");
-            break;
-        case 'c':
-            dump_fault_info();
-            break;
-        default:
-            printf("\nUART: unknown command '%c' (0x%02X). Press 'h' for help.\n",
-                   (raw_ch >= 32 && raw_ch <= 126) ? raw_ch : '.',
-                   (unsigned int)(raw_ch & 0xFF));
-            break;
-    }
-}
-
-
 void initialize_uart() {
     // Initialize UART for TX and RX
     gpio_init(UART_TX_PIN);
@@ -665,7 +479,8 @@ void initialize_uart() {
     // See register_cache.c::core1_main() for the actual init sequence.
 
     bool sasi_log_auto_flush_enabled = SASI_LOG_AUTO_FLUSH_DEFAULT != 0;
-    print_uart_help();
+    printf("Diag/log stream on UART0 @ %d baud; interactive console on USB CDC (micro_tui).\n",
+           BAUD_RATE);
 
     //configure GPIO pulls and output strenght/skew etc
     one_time_pin_setup();
@@ -743,19 +558,29 @@ void initialize_uart() {
 
     printf("waiting for DMA register access...\n");
 
+    // Interactive console: micro_tui REPL + full-screen menu on the USB CDC
+    // port (raw TinyUSB; stdio_usb stays off so the diag/log flood on UART0
+    // never shares a stream with the machine-parseable console). Poll-driven
+    // from this loop; all storage/SPI work it triggers runs on core 1 via the
+    // console-ops mailbox. Init after core 1 launch so mailbox ops can complete.
+    tui_init();
+
+    // Host control channel console: the same REPL/menu bound a second time over
+    // the mgmt_chan register channel, so the Victor 9000 (boot ROM F4 / DOS
+    // tool) can drive the console it detects on the DMA card. Core-0 only; polled
+    // below next to tui_poll(). Bind after tui_init().
+    mgmt_con_init();
+
     // Stuck-state detector state
     uint32_t last_defer_processed = 0;
     uint32_t last_isr_calls = 0;
     uint64_t last_defer_check_us = time_us_64();
     bool stuck_already_reported = false;
     bool stack_overflow_reported = false;
-    bool fault_info_dumped = false;
 
     for (uint64_t i = 0; i<INT64_MAX; i++) {
-        int cmd = getchar_timeout_us(0);
-        if (cmd >= 0) {
-            handle_uart_command(cmd, &sasi_log_auto_flush_enabled);
-        }
+        tui_poll();       // USB console: pump TinyUSB + service REPL/menu commands
+        mgmt_con_poll();  // host control channel: drain Victor cmd bytes + pump responses
         if (sasi_log_auto_flush_enabled && storage_ready) {
             sasi_log_flush_if_ready(&dma_registers);
         }

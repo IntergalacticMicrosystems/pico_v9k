@@ -13,7 +13,7 @@
 #include "sasi_log.h"
 #include "logging.h"
 #include "fifo_helpers.h"
-#include "pico_fujinet/fuji_console.h"
+#include "console/console_ops.h"
 
 // Set to 1 to enable verbose defer processor logging (WARNING: causes queue overflow)
 #define DEFER_VERBOSE_LOG 0
@@ -419,9 +419,10 @@ void defer_worker_main(void) {
         // Flush SASI command log to SD card when bus is idle
         sasi_log_flush_if_ready(dma);
 
-        // Run any pending console-initiated FujiNet op on this core (all SPI1
-        // traffic stays on core 1). O(1) when idle — single volatile load.
-        fuji_console_service();
+        // Run any pending console-initiated op (mount/eject/ls/wifi/peek/...) on
+        // this core (all SPI1 traffic stays on core 1). O(1) when idle — single
+        // volatile load.
+        console_op_service();
 
         // Emit recorded FIFO tag trace entries for debugging
         // DISABLED: causes queue overflow due to fast_log overhead

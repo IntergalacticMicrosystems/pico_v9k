@@ -221,6 +221,30 @@ const char* sd_storage_get_image_name(int index) {
     return sd_state->file_names[index];
 }
 
+// Walk the root directory for *.img files, emitting each name + byte size.
+// Reuses the same scan/match logic as sd_storage_init(). Runs under the FatFS
+// guard; a no-card / uninitialized backend simply emits nothing.
+void sd_storage_list_images(void (*emit)(void *ctx, const char *name, unsigned size),
+                            void *ctx) {
+    if (!sd_initialized || !sd_state || !emit) {
+        return;
+    }
+
+    fatfs_guard_lock();
+    DIR dir;
+    FRESULT fr = f_opendir(&dir, "");
+    if (FR_OK == fr) {
+        FILINFO fno;
+        while (FR_OK == f_readdir(&dir, &fno) && fno.fname[0] != 0) {
+            if (matches_pattern(fno.fname)) {
+                emit(ctx, fno.fname, (unsigned)fno.fsize);
+            }
+        }
+        f_closedir(&dir);
+    }
+    fatfs_guard_unlock();
+}
+
 static bool sd_storage_init(void) {
     if (sd_initialized) {
         return true;

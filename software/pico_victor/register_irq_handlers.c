@@ -16,6 +16,7 @@
 #include "logging.h"
 #include "register_irq_handlers.h"
 #include "fifo_helpers.h"
+#include "mgmt_chan.h"   // host control channel: cells 0x40/0x50/0x60 in the 0xEF300 window
 
 
 
@@ -199,6 +200,11 @@ static inline bool is_valid_reg_offset(uint32_t masked_offset) {
         case REG_ADDR_L:
         case REG_ADDR_M:
         case REG_ADDR_H:
+        // Host management/control channel cells (mgmt_chan): reads prefetch from
+        // the register cache, writes are handled synchronously below.
+        case MGMT_CHAN_CMD:
+        case MGMT_CHAN_STATUS:
+        case MGMT_CHAN_RESP:
             return true;
         default:
             return false;
@@ -423,8 +429,22 @@ void __time_critical_func(register_read_irq_isr)() {
                 bool is_addr_reg = valid_offset &&
                                    (masked_offset == REG_ADDR_L || masked_offset == REG_ADDR_M ||
                                     masked_offset == REG_ADDR_H);
+                // Host control-channel cells: writes take effect SYNCHRONOUSLY in
+                // the ISR (a handful of stores/counter bumps) — the defer queue
+                // would let a fast write-then-read race the complement echo.
+                bool is_mgmt_reg = valid_offset &&
+                                   (masked_offset == MGMT_CHAN_CMD ||
+                                    masked_offset == MGMT_CHAN_STATUS ||
+                                    masked_offset == MGMT_CHAN_RESP);
                 if (!valid_offset) {
                     trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                }
+
+                if (is_mgmt_reg) {
+                    // CMD  -> ~val into the 0x40 cache cell + push into the cmd ring;
+                    // STATUS -> set the atomic reset-request flag (core 0 flushes);
+                    // RESP -> bump the atomic ack counter. All O(1).
+                    mgmt_chan_reg_write(masked_offset, data);
                 }
 
                 if (is_addr_reg) {
@@ -475,11 +495,13 @@ void __time_critical_func(register_read_irq_isr)() {
                     }
                 }
 
-                if (valid_offset && masked_offset != REG_DATA) {
+                if (valid_offset && masked_offset != REG_DATA && !is_mgmt_reg) {
                     // Skip REG_DATA: host DATA writes are command bytes that must
                     // NOT leak into the DATA cache.  The DATA cache holds target→host
                     // values (status/message bytes) set by cached_set_data() and
                     // phase-aware PREFETCH logic.
+                    // Skip mgmt cells: mgmt_chan_reg_write() above owns those cells
+                    // (0x40 = complement echo; 0x50/0x60 hold values written by core 0).
                     cached->values[masked_offset] = data;
                     if (masked_offset == REG_STATUS) {
                         cached->values[0x30] = data;
@@ -489,7 +511,8 @@ void __time_critical_func(register_read_irq_isr)() {
 
                 uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
                 fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-                enque_result = valid_offset && !is_addr_reg;
+                // mgmt writes are fully handled here; no deferred processing.
+                enque_result = valid_offset && !is_addr_reg && !is_mgmt_reg;
                 break;
             }
 

@@ -56,18 +56,44 @@ target_sources(dma_board PRIVATE
     pico_victor/register_cache.c
     pico_victor/reg_queue_processor.c
     pico_victor/register_irq_handlers.c
+    pico_victor/mgmt_chan.c
     pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
     pico_fujinet/fuji_proto.c
     pico_fujinet/fuji_blkdev.c
     pico_fujinet/fuji_storage.c
-    pico_fujinet/fuji_console.c
     pico_storage/storage.c
     pico_storage/fatfs_guard.c
     pico_storage/sd_storage.c
-    pico_storage/hw_config.c)
+    pico_storage/hw_config.c
+    # Management console: micro_tui REPL + full-screen menu on USB CDC, plus the
+    # core-1 console-ops mailbox generalized from the Phase B fuji_console.
+    console/console_ops.c
+    console/tui.c
+    console/tui_cmds.c
+    console/mgmt_con.c
+    console/usb_descriptors.c)
 
 pico_set_binary_type(dma_board default)
+
+# micro_tui (mtui): the console REPL runs on its line-mode engine and the
+# full-screen menu on its widget toolkit, both over one TinyUSB CDC transport.
+# Referenced by path (both repos live under ~/sync); override MTUI_PATH to move.
+set(MTUI_PATH /root/sync/micro_tui CACHE PATH "micro_tui library root")
+target_sources(dma_board PRIVATE
+    ${MTUI_PATH}/src/line/line.c
+    ${MTUI_PATH}/src/app/actions.c
+    ${MTUI_PATH}/src/widgets/widget.c
+    ${MTUI_PATH}/src/core/screen.c
+    ${MTUI_PATH}/src/core/terminal.c
+    ${MTUI_PATH}/src/input/input.c
+    ${MTUI_PATH}/src/platform/pico/transport_cdc_tud.c
+)
+target_include_directories(dma_board PRIVATE ${MTUI_PATH}/include)
+target_compile_definitions(dma_board PRIVATE
+    MTUI_HAVE_PICO_SDK=1
+    MTUI_SCREEN_MAX_W=80
+    MTUI_SCREEN_MAX_H=25)
 
 option(VERIFY_DMA_WRITES "Enable DMA write read-back verification" OFF)
 
@@ -97,6 +123,7 @@ target_include_directories(dma_board PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/pico_victor
         ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
         ${CMAKE_CURRENT_LIST_DIR}/pico_storage
+        ${CMAKE_CURRENT_LIST_DIR}/console      # tusb_config.h + console headers
         ${NO_OS_FATFS_PATH}/include
         ${NO_OS_FATFS_PATH}/ff15/source
         ${NO_OS_FATFS_PATH}/sd_driver
@@ -111,6 +138,9 @@ target_link_libraries(dma_board
         hardware_spi
         hardware_dma
         no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+        tinyusb_device          # raw CDC console (stdio_usb stays OFF)
+        tinyusb_board
+        pico_unique_id          # USB serial-number descriptor
         )
 
 # Disable the FatFS library's ARM HardFault handler (crash.c) so we can
