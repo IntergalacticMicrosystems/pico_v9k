@@ -14,6 +14,7 @@
  * setter). */
 #include "tui_cmds.h"
 #include "console_ops.h"
+#include "buscap.h"
 #include "storage.h"
 #include "fuji_blkdev.h"
 
@@ -216,6 +217,17 @@ static void cmd_diag(mtui_line_t *ln, int argc, char **argv) {
     mtui_line_write(ln, "OK\n");
 }
 
+/* Bench diagnostic: capture one XACK-framed bus access with PIO2 (buscap.c)
+ * and print the signal edge list. Optional arg = number of accesses to skip
+ * before capturing (default 0 = the first one). 10 s trigger timeout. */
+static void cmd_buscap(mtui_line_t *ln, int argc, char **argv) {
+    uint32_t skip = (argc > 1) ? (uint32_t)strtoul(argv[1], NULL, 0) : 0;
+    bool wide = (argc > 2) && argv[2][0] == 'w';
+    int expect = (argc > 3) ? (int)strtoul(argv[3], NULL, 16) : -1;
+    if (buscap_run(ln, skip, 15000, wide, expect)) mtui_line_write(ln, "OK\n");
+    /* buscap_run printed its own ERR line on failure */
+}
+
 /* `menu` only requests the switch; the firmware glue reacts to ln->done by
  * entering the full-screen TUI. mtui suppresses the post-dispatch prompt. */
 static void cmd_menu(mtui_line_t *ln, int argc, char **argv) {
@@ -237,6 +249,7 @@ static const mtui_line_cmd_t k_cmds[] = {
     { "peek",   NULL, cmd_peek },
     { "wifi",   NULL, cmd_wifi },
     { "diag",   NULL, cmd_diag },
+    { "buscap", NULL, cmd_buscap },
     { "menu",   NULL, cmd_menu },
 };
 

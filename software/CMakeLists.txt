@@ -72,6 +72,7 @@ target_sources(dma_board PRIVATE
     console/tui.c
     console/tui_cmds.c
     console/mgmt_con.c
+    console/buscap.c
     console/usb_descriptors.c)
 
 pico_set_binary_type(dma_board default)
