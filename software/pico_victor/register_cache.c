@@ -21,7 +21,6 @@
 #include "logging.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
-#include "pico_fujinet/spi.h"
 #include "sasi_log.h"
 
 // USE_SD_STORAGE and SD_DISK_IMAGE come from CMakeLists.txt target_compile_definitions
@@ -215,30 +214,21 @@ void core1_main() {
             }
         }
     } else {
-        printf("Core1: SD init failed, falling back to FujiNet\n");
-        spi_bus_init();
-        if (!fujinet_config_boot(false)) {
-            printf("Core1: FujiNet failed to clear boot config\n");
-        }
-        if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
-            printf("Core1: FujiNet failed to mount host slot 0\n");
-        }
-        if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
-            printf("Core1: FujiNet failed to mount disk slot 0\n");
-        }
+        // SD init failed. The old direct-FujiNet fallback (pico_fujinet/spi.c)
+        // was removed in Phase A; there is no registered FujiNet storage backend
+        // yet, so do NOT silently boot into a non-functional state.
+        // TODO(Phase B): register STORAGE_BACKEND_FUJINET and mount through the
+        // storage_ops_t vtable here.
+        printf("Core1: SD init FAILED and no FujiNet backend yet (Phase B) -- "
+               "no storage mounted\n");
     }
 #else
-    printf("Core1: Initializing FujiNet storage backend...\n");
-    spi_bus_init();
-    if (!fujinet_config_boot(false)) {
-        printf("Core1: FujiNet failed to clear boot config\n");
-    }
-    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("Core1: FujiNet failed to mount host slot 0\n");
-    }
-    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("Core1: FujiNet failed to mount disk slot 0\n");
-    }
+    // Phase A ships the FujiNet SPI transport (pico_fujinet/fuji_blkdev.c) but
+    // does not register it as a storage backend. Building with USE_SD_STORAGE=0
+    // therefore leaves no storage mounted until Phase B wires the vtable.
+    // TODO(Phase B): register STORAGE_BACKEND_FUJINET and fuji_mount_all() here.
+    printf("Core1: FujiNet storage backend not implemented yet (Phase B) -- "
+           "no storage mounted\n");
 #endif
 
     sasi_log_init();

@@ -58,7 +58,8 @@ target_sources(dma_board PRIVATE
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
-    pico_fujinet/spi.c
+    pico_fujinet/fuji_proto.c
+    pico_fujinet/fuji_blkdev.c
     pico_storage/storage.c
     pico_storage/fatfs_guard.c
     pico_storage/sd_storage.c
@@ -126,7 +127,8 @@ pico_add_extra_outputs(dma_board)
 # On-device test executable (UNIT_TEST mode, no PIO bus activity)
 add_executable(dma_board_tests
     test/on_device_runner.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
+    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/fuji_proto.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/fuji_blkdev.c)
 
 target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
 

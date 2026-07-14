@@ -17,7 +17,6 @@
 #include "logging.h"
 #include "reg_queue_processor.h"
 #include "fifo_helpers.h"
-#include "pico_fujinet/spi.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
 #define DMA_DEBUG_PRINTF 0
@@ -92,11 +91,6 @@ void pio_debug_state() {
     }
 }
 
-static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
-    uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
-    return DEVICE_DISK_BASE + target;
-}
-
 static inline uint32_t sasi_dma_sector_count(const dma_registers_t *dma) {
     return dma ? dma->block_count.full : 0;
 }
@@ -105,71 +99,21 @@ static inline uint32_t sasi_dma_bytes_requested(const dma_registers_t *dma) {
     return sasi_dma_sector_count(dma) * SASI_SECTOR_SIZE;
 }
 
+/* NOTE(Phase B): sasi_dma_device_to_ram / sasi_dma_ram_to_device back the
+ * legacy PIO-driven DMA path (dma_handle_sasi_req), which is NOT on the active
+ * command flow -- sasi.c drives every read/write through the storage_* layer.
+ * They used to call fujinet_read_sector/write_sector directly; Phase A removed
+ * that bypass (pico_fujinet/spi.c is gone), so they now have no backend. If this
+ * path is ever revived, wire storage_read_sector()/storage_write_sector() (or the
+ * Phase B FujiNet vtable) in here instead of the deleted direct calls. */
 static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
-    uint8_t device = sasi_dma_target_device(dma);
-    uint32_t lba = dma->logical_block.full;
-    uint32_t sectors_remaining = sasi_dma_sector_count(dma);
-    uint32_t addr = dma->dma_address.full;
-
-
-    if (sectors_remaining == 0) {
-        return false;
-    }
-
-    while (sectors_remaining > 0) {
-        uint8_t sector[SASI_SECTOR_SIZE];
-
-        if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
-            printf("Warning: FujiNet read LBA %lu failed\n", (unsigned long)lba);
-            return false;
-        }
-
-        dma_write_to_victor_ram(sector, SASI_SECTOR_SIZE, addr);
-
-        addr += SASI_SECTOR_SIZE;
-        sectors_remaining--;
-        lba++;
-    }
-
-    dma->dma_address.full = addr;
-    dma->logical_block.full = lba;
-    dma->block_count.full = 0;
-    cached_sync_dma_address(dma);
-
-    return true;
+    (void)dma;
+    return false;   /* no backend on the legacy DMA path since Phase A */
 }
 
 static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
-    uint8_t device = sasi_dma_target_device(dma);
-    uint32_t lba = dma->logical_block.full;
-    uint32_t sectors_remaining = sasi_dma_sector_count(dma);
-    uint32_t addr = dma->dma_address.full;
-
-    if (sectors_remaining == 0) {
-        return false;
-    }
-
-    while (sectors_remaining > 0) {
-        uint8_t sector[SASI_SECTOR_SIZE];
-
-        dma_read_from_victor_ram(sector, SASI_SECTOR_SIZE, addr);
-
-        if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
-            printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
-            return false;
-        }
-
-        addr += SASI_SECTOR_SIZE;
-        sectors_remaining--;
-        lba++;
-    }
-
-    dma->dma_address.full = addr;
-    dma->logical_block.full = lba;
-    dma->block_count.full = 0;
-    cached_sync_dma_address(dma);
-
-    return true;
+    (void)dma;
+    return false;   /* no backend on the legacy DMA path since Phase A */
 }
 
 // Global DMA registers in scratch_x RAM bank — zero-initialized by CRT0.

@@ -13,7 +13,6 @@
 #include "sasi.h"
 #include "sasi_log.h"
 #include "pico_storage/storage.h"
-#include "pico_fujinet/spi.h"
 #include "pico_victor/register_irq_handlers.h"
 
 // Set to 1 to enable SASI debug printf (WARNING: slows Core 1 dramatically, causes queue overflow)
@@ -844,16 +843,10 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             }
         }
 
-        // Only fall back to FujiNet when SD backend is NOT active.
-        // When SD is active, a write failure means real failure.
-        if (!storage_write_ok) {
-            if (storage_get_backend() != STORAGE_BACKEND_SDCARD) {
-                uint8_t device = DEVICE_DISK_BASE + target;
-                if (fujinet_write_sector(device, sector + i, sector_data, 512)) {
-                    storage_write_ok = true;
-                }
-            }
-        }
+        // No FujiNet direct-write bypass any more (Phase A removed
+        // pico_fujinet/spi.c). A failed storage_write_sector() is a real
+        // failure regardless of backend; the check below breaks the transfer.
+        // TODO(Phase B): route FujiNet writes through the storage_ops_t vtable.
         uint32_t sd_wr_elapsed = (uint32_t)(time_us_64() - t0);
         sasi_op_record(sd_wr_elapsed, &sasi_op_timing.max_sd_write_us,
                        SASI_OP_SD_WRITE, sector + i);
@@ -1095,36 +1088,15 @@ bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffe
         }
         sasi_printf("Warning: storage_read_sector failed for target %d, LBA %lu\n",
                     target, (unsigned long)sector);
-        // When SD backend is active but read fails, return zeroed buffer
-        // Don't fall through to FujiNet - the SD card is the authoritative source
-        if (storage_get_backend() == STORAGE_BACKEND_SDCARD) {
-            memset(buffer, 0, 512);
-            return false;
-        }
     }
 
-    // Only fall back to direct FujiNet access when the SD backend is NOT the
-    // authoritative source. Mirrors the write path (handle_write_sectors).
-    //
-    // Without this guard, a read to an unmounted/absent target -- e.g. DOS
-    // speculatively walking the SASI bus looking for additional drives -- would
-    // fall through to fujinet_read_sector() and block for SPI_PHASE_TIMEOUT_US
-    // (10s) waiting on a handshake that never comes when no FujiNet is present.
-    // That blows the 5s BIOS command timeout and wedges the bus. Fail fast with
-    // a zeroed buffer instead so the command completes immediately with CHECK
-    // CONDITION and the host's bus walk moves on.
-    if (storage_get_backend() == STORAGE_BACKEND_SDCARD) {
-        memset(buffer, 0, 512);
-        return false;
-    }
-
-    // Fall back to FujiNet direct access if storage layer not available
-    uint8_t device = DEVICE_DISK_BASE + target;
-    if (!fujinet_read_sector(device, sector, buffer, 512)) {
-        // Last resort: generate deterministic test data
-        for (int i = 0; i < 512; i++) buffer[i] = (uint8_t)((sector + i) & 0xFF);
-        return false;
-    }
-    sasi_printf("RD sector %lu target %d\n", (unsigned long)sector, target);
-    return true;
+    // No FujiNet direct-read bypass any more (Phase A removed pico_fujinet/spi.c).
+    // Any target not served by a live storage backend fails fast with a zeroed
+    // buffer -- the same missing-backend result the SD path uses -- so DOS's
+    // speculative SASI bus walk gets an immediate CHECK CONDITION instead of
+    // stalling on a handshake that never comes. That fast-fail was what kept the
+    // bus walk from blowing the 5s BIOS command timeout and wedging the bus.
+    // TODO(Phase B): route FujiNet reads through the storage_ops_t vtable.
+    memset(buffer, 0, 512);
+    return false;
 }

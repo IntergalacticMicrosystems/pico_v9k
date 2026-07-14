@@ -19,6 +19,7 @@
 #include "sasi.h"
 #include "sasi_log.h"
 #include "pico_storage/fatfs_guard.h"
+#include "pico_fujinet/fuji_blkdev.h"
 
 // USE_SD_STORAGE and SD_DISK_IMAGE are provided by CMakeLists.txt
 // target_compile_definitions so both dma_board.c and register_cache.c see them.
@@ -259,6 +260,7 @@ static void print_uart_help(void) {
     printf("  p   : PIO0 state + XACK/EXTIO/CLK5/READY pin dump\n");
     printf("  i   : fast IRQ DATA transition trace dump\n");
     printf("  c   : dump HardFault crash info (if captured)\n");
+    printf("  F   : FujiNet SPI link bring-up test (BENCH ONLY, not mid-disk-I/O)\n");
     printf("\n");
 }
 
@@ -447,12 +449,43 @@ static void dump_pio0_and_pin_state(void) {
     printf("=== END PIO0 STATE ===\n\n");
 }
 
+/* FujiNet SPI link bring-up test (the 'F' console command). BENCH ONLY: the
+ * console runs on core 0 while all storage I/O runs on core 1, and the FujiNet
+ * link shares SPI1 with the SD card — the bus mutex serialises access, but do
+ * NOT invoke this mid-disk-I/O on the bench. Init if needed, sample DRDY, run
+ * the cheap liveness op (WiFi-status query), and print pass/fail + timing. */
+static void fuji_link_test(void) {
+    printf("\nFujiNet link bring-up test (BENCH: not mid-disk-I/O)\n");
+    fuji_link_init();
+    // DRDY is on GP46 (input, pull-down); high means the ESP slave is armed.
+    printf("  DRDY (GP46): %s\n", gpio_get(46) ? "HIGH (ESP ready)" : "LOW (ESP not ready/absent)");
+
+    bool wifi_up = false;
+    uint64_t t0 = time_us_64();
+    bool ok = fuji_link_ping(&wifi_up);
+    uint32_t elapsed_us = (uint32_t)(time_us_64() - t0);
+
+    if (ok) {
+        printf("  PASS: link alive in %lu us (WiFi %s)\n",
+               (unsigned long)elapsed_us, wifi_up ? "connected" : "disconnected");
+    } else {
+        printf("  FAIL: no ACK from ESP after %lu us\n", (unsigned long)elapsed_us);
+    }
+}
+
 static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
     if (raw_ch < 0 || !auto_flush_enabled) {
         return;
     }
 
     if (raw_ch == '\r' || raw_ch == '\n') {
+        return;
+    }
+
+    // 'F' (uppercase) is the FujiNet bench test; check it before the tolower()
+    // fold below, where lowercase 'f' is already the SASI-log flush command.
+    if (raw_ch == 'F') {
+        fuji_link_test();
         return;
     }
 

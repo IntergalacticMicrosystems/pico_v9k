@@ -6,7 +6,7 @@
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 
-#include "../pico_fujinet/spi.h"
+#include "../pico_fujinet/fuji_blkdev.h"
 
 #define UART_ID uart0
 #define BAUD_RATE 115200
@@ -56,7 +56,7 @@ static bool test_spi_read_sectors(void) {
 
         printf("=== Sector %u (LBA 0x%08X) ===\n", (unsigned)lba, (unsigned)lba);
 
-        bool success = fujinet_read_sector(DEVICE_DISK_BASE, lba, sector, 512);
+        bool success = fuji_read(0, lba, sector, 1);   /* target 0, one sector */
 
         if (!success) {
             printf("FAIL: Could not read sector %u from FujiNet\n", (unsigned)lba);
@@ -82,21 +82,20 @@ int main() {
     printf("\nVictor DMA On-Device Tests\n");
 
     bool ok = true;
-    // Initialize SPI bus for FujiNet storage
-    spi_bus_init();
+    // Bring the FujiNet SPI link up and mount the ESP's configured slots.
+    // NOTE(bench): this harness also drives UART on GP46, which fuji_link_init()
+    // re-owns as DRDY — see FUJINET_PLAN.md's GP46 caution. On the rev1 bench,
+    // wire the debug UART elsewhere if you need this test's output.
+    fuji_link_init();
 
-    if (!fujinet_config_boot(false)) {
-        printf("FAIL: FujiNet CONFIG boot disable\n");
+    bool wifi_up = false;
+    if (!fuji_link_ping(&wifi_up)) {
+        printf("FAIL: FujiNet link not alive (no ACK)\n");
         ok = false;
     }
 
-    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("FAIL: FujiNet mount host 0\n");
-        ok = false;
-    }
-
-    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("FAIL: FujiNet mount disk slot 0\n");
+    if (!fuji_mount_all()) {
+        printf("FAIL: FujiNet MOUNT_ALL\n");
         ok = false;
     }
 
