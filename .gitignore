@@ -31,3 +31,10 @@ hardware/*/[!.]*.loop-m*.log
 hardware/*/[!.]*.loop.json
 hardware/*/[!.]*.failed.kicad_pcb
 hardware/*/[!.]*.roll[0-9]*
+
+# Host-test and Victor-client build byproducts
+software/test/host/test_mgmt
+software/test/host/test_mgmt_tiny
+software/victor_client/*.com
+software/victor_client/*.rom
+software/victor_client/*_rom.bin
