@@ -305,6 +305,14 @@ static bool transact_u8(uint8_t device, uint8_t command,
 /* Cheap liveness probe: FUJICMD_GET_WIFISTATUS is a no-param request with a
  * one-byte reply (3=up, 6=down), so an ACK proves the SPI link is alive without
  * touching TNFS. */
+/* DRDY line state (GP46, high = ESP slave armed). Reads a GPIO input only, so
+ * it is safe from either core; used by the console status display. */
+bool fuji_link_drdy(void)
+{
+    fuji_link_init();
+    return fuji_drdy();
+}
+
 bool fuji_link_ping(bool *wifi_up)
 {
     fuji_link_init();
@@ -367,25 +375,37 @@ bool fuji_mount_all(void)
     return false;
 }
 
-/* Point the FujiNet's disk device 0 at server file `name` (TNFS host slot 0):
- * UNMOUNT the slot, then SET_DEVICE_FULLPATH with the name in a 256-byte buffer.
- * NOTE: the ESP persists this selection to its fnconfig (Config.save), so it
- * also changes what an unattended remote boot serves. Returns true iff both ACK. */
-bool fuji_select_image(const char *name)
+/* Unmount whatever the FujiNet's disk device `slot` currently serves
+ * (FUJICMD_UNMOUNT_IMAGE, 1 param = deviceSlot). Blocks; returns true on ACK. */
+bool fuji_unmount_slot(uint8_t slot)
+{
+    fuji_link_init();
+    return transact_u8(FUJI_DEVICEID_FUJINET, FUJICMD_UNMOUNT_IMAGE, &slot, 1,
+                       NULL, 0, NULL, 0, NULL, FUJI_RETRIES, FUJI_MOUNT_FIRST_US);
+}
+
+/* Point the FujiNet's disk device `slot` at server file `name` (TNFS host slot
+ * 0): UNMOUNT the slot, then SET_DEVICE_FULLPATH with the name in a 256-byte
+ * buffer. `slot` is passed as the UNMOUNT deviceSlot and as params[0]
+ * (deviceSlot) of SET_DEVICE_FULLPATH, so SASI target N maps to ESP device slot
+ * N (device ID 0x31+N end to end). `read_only` sends access mode 1
+ * (DISK_ACCESS_MODE_READ) instead of 2 (WRITE). NOTE: the ESP persists this
+ * selection to its fnconfig (Config.save), so it also changes what an
+ * unattended remote boot serves. Returns true iff both ACK. */
+bool fuji_select_image(uint8_t slot, const char *name, bool read_only)
 {
     fuji_link_init();
     size_t len = strlen(name);
     if (len >= FUJI_PATH_LEN) return false;
 
-    uint8_t slot0 = 0;
-    if (!transact_u8(FUJI_DEVICEID_FUJINET, FUJICMD_UNMOUNT_IMAGE, &slot0, 1,
-                     NULL, 0, NULL, 0, NULL, FUJI_RETRIES, FUJI_MOUNT_FIRST_US))
+    if (!fuji_unmount_slot(slot))
         return false;
 
     uint8_t path[FUJI_PATH_LEN];
     memset(path, 0, sizeof(path));
     memcpy(path, name, len);
-    uint8_t params[3] = { 0, 0, 2 };   /* deviceSlot, hostSlot, DISK_ACCESS_MODE_WRITE */
+    uint8_t mode = read_only ? 1u : 2u;   /* DISK_ACCESS_MODE_READ / _WRITE */
+    uint8_t params[3] = { slot, 0, mode }; /* deviceSlot, hostSlot, mode */
     return transact_u8(FUJI_DEVICEID_FUJINET, FUJICMD_SET_DEVICE_FULLPATH, params, 3,
                        path, sizeof(path), NULL, 0, NULL,
                        FUJI_RETRIES, FUJI_MOUNT_FIRST_US);

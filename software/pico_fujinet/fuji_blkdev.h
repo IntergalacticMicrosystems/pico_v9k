@@ -32,6 +32,10 @@ void fuji_link_init(void);
  * (link is alive); *wifi_up (may be NULL) reports whether the radio is joined. */
 bool fuji_link_ping(bool *wifi_up);
 
+/* Sample the DRDY handshake line (GP46). High means the ESP slave is armed /
+ * present. GPIO-input read only, so safe from either core. */
+bool fuji_link_drdy(void);
+
 /* Read `sector_count` 512-byte sectors starting at `lba` from SASI `target`
  * (device 0x31 + target) into `buf`. Batches into READ_MULTI runs of up to 16
  * sectors — one request/reply per run. Blocks; returns false on any I/O error. */
@@ -47,11 +51,15 @@ bool fuji_write(uint8_t target, uint32_t lba, const void *buf, uint32_t sector_c
  * Call from the mount path, never at boot, so a missing ESP32 never stalls. */
 bool fuji_mount_all(void);
 
-/* Select which server file the FujiNet's disk device 0 serves (TNFS host slot
- * 0), by name. Blocks. Returns false if the name is too long or the ESP doesn't
- * ACK. NOTE: the ESP persists this selection to its fnconfig, so it also changes
- * what an unattended remote boot serves. */
-bool fuji_select_image(const char *name);
+/* Select which server file the FujiNet's disk device `slot` serves (TNFS host
+ * slot 0), by name. `slot` = SASI target (device ID 0x31+slot). `read_only`
+ * sends access mode READ instead of WRITE. Blocks. Returns false if the name is
+ * too long or the ESP doesn't ACK. NOTE: the ESP persists this selection to its
+ * fnconfig, so it also changes what an unattended remote boot serves. */
+bool fuji_select_image(uint8_t slot, const char *name, bool read_only);
+
+/* Unmount whatever the FujiNet's disk device `slot` serves. Blocks; ACK->true. */
+bool fuji_unmount_slot(uint8_t slot);
 
 /* Stat one server file on TNFS host slot 0: fill *size with its byte length and
  * return NULL, else a short reason string ("FujiNet unreachable", "not found on

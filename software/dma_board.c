@@ -19,7 +19,10 @@
 #include "sasi.h"
 #include "sasi_log.h"
 #include "pico_storage/fatfs_guard.h"
+#include "pico_storage/storage.h"
 #include "pico_fujinet/fuji_blkdev.h"
+#include "pico_fujinet/fuji_console.h"
+#include <stdlib.h>
 
 // USE_SD_STORAGE and SD_DISK_IMAGE are provided by CMakeLists.txt
 // target_compile_definitions so both dma_board.c and register_cache.c see them.
@@ -260,7 +263,7 @@ static void print_uart_help(void) {
     printf("  p   : PIO0 state + XACK/EXTIO/CLK5/READY pin dump\n");
     printf("  i   : fast IRQ DATA transition trace dump\n");
     printf("  c   : dump HardFault crash info (if captured)\n");
-    printf("  F   : FujiNet SPI link bring-up test (BENCH ONLY, not mid-disk-I/O)\n");
+    printf("  F   : enter FujiNet bench console (ping/status/ls/mount/wifi; BENCH ONLY, host idle)\n");
     printf("\n");
 }
 
@@ -449,28 +452,107 @@ static void dump_pio0_and_pin_state(void) {
     printf("=== END PIO0 STATE ===\n\n");
 }
 
-/* FujiNet SPI link bring-up test (the 'F' console command). BENCH ONLY: the
- * console runs on core 0 while all storage I/O runs on core 1, and the FujiNet
- * link shares SPI1 with the SD card — the bus mutex serialises access, but do
- * NOT invoke this mid-disk-I/O on the bench. Init if needed, sample DRDY, run
- * the cheap liveness op (WiFi-status query), and print pass/fail + timing. */
-static void fuji_link_test(void) {
-    printf("\nFujiNet link bring-up test (BENCH: not mid-disk-I/O)\n");
-    fuji_link_init();
-    // DRDY is on GP46 (input, pull-down); high means the ESP slave is armed.
-    printf("  DRDY (GP46): %s\n", gpio_get(46) ? "HIGH (ESP ready)" : "LOW (ESP not ready/absent)");
+/* FujiNet bench console (the 'F' command). A small line-mode shell on core 0.
+ * BENCH ONLY: every op is handed to core 1 via the fuji_console mailbox (ALL
+ * SPI1 traffic must stay on core 1, off the SD burst path), and core 1 BLOCKS
+ * for the duration of each ESP transaction — so only run this while the host is
+ * idle. No direct fuji_* SPI calls happen from core 0. */
+static void fuji_shell_help(void) {
+    printf("FujiNet console commands:\n");
+    printf("  ping                 link liveness + DRDY + WiFi state\n");
+    printf("  status               link/DRDY, WiFi, and per-target mounts\n");
+    printf("  ls                   list *.img on the FujiNet TNFS host\n");
+    printf("  mount <target> <file>  mount server <file> as SASI <target>\n");
+    printf("  unmount <target>     unmount a SASI target\n");
+    printf("  wifi                 show stored SSID + link state\n");
+    printf("  wifi <ssid> <pass>   join/persist a network (blocks seconds)\n");
+    printf("  scan                 scan for networks (blocks seconds)\n");
+    printf("  help | ?             this help\n");
+    printf("  exit | q             leave the FujiNet console\n");
+}
 
-    bool wifi_up = false;
-    uint64_t t0 = time_us_64();
-    bool ok = fuji_link_ping(&wifi_up);
-    uint32_t elapsed_us = (uint32_t)(time_us_64() - t0);
-
-    if (ok) {
-        printf("  PASS: link alive in %lu us (WiFi %s)\n",
-               (unsigned long)elapsed_us, wifi_up ? "connected" : "disconnected");
-    } else {
-        printf("  FAIL: no ACK from ESP after %lu us\n", (unsigned long)elapsed_us);
+// Blocking line reader with echo + backspace. Core 0 only; the shell owns the
+// console while it runs (the main loop's non-blocking reader is not active).
+static void fuji_read_line(char *buf, size_t cap) {
+    size_t n = 0;
+    for (;;) {
+        int c = getchar();
+        if (c == '\r' || c == '\n') { printf("\r\n"); break; }
+        if (c == 0x08 || c == 0x7F) {          // backspace / DEL
+            if (n > 0) { n--; printf("\b \b"); }
+            continue;
+        }
+        if (c >= 32 && c < 127 && n + 1 < cap) {
+            buf[n++] = (char)c;
+            putchar(c);                        // echo
+        }
     }
+    buf[n < cap ? n : cap - 1] = '\0';
+}
+
+static void fuji_submit(fuji_console_op_t op, uint8_t target,
+                        const char *a1, const char *a2) {
+    fuji_console_submit(op, target, a1, a2, fuji_console_op_timeout_ms(op));
+}
+
+static void fuji_console_shell(void) {
+    printf("\nFujiNet console (bench tool). WARNING: long ops block core 1 while\n");
+    printf("it talks to the ESP over the shared SPI bus -- run only while the host\n");
+    printf("is idle. Type 'help' for commands, 'exit' or 'q' to leave.\n");
+
+    char line[160];
+    for (;;) {
+        printf("fuji> ");
+        fuji_read_line(line, sizeof(line));
+
+        // Tokenize (single-threaded console, strtok is fine).
+        char *argv[4];
+        int argc = 0;
+        for (char *tok = strtok(line, " \t"); tok && argc < 4; tok = strtok(NULL, " \t")) {
+            argv[argc++] = tok;
+        }
+        if (argc == 0) continue;
+
+        const char *cmd = argv[0];
+        if (!strcmp(cmd, "exit") || !strcmp(cmd, "q")) {
+            break;
+        } else if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) {
+            fuji_shell_help();
+        } else if (!strcmp(cmd, "ping")) {
+            fuji_submit(FCON_PING, 0, NULL, NULL);
+        } else if (!strcmp(cmd, "status")) {
+            fuji_submit(FCON_STATUS, 0, NULL, NULL);
+        } else if (!strcmp(cmd, "ls")) {
+            fuji_submit(FCON_LS, 0, NULL, NULL);
+        } else if (!strcmp(cmd, "scan")) {
+            fuji_submit(FCON_SCAN, 0, NULL, NULL);
+        } else if (!strcmp(cmd, "mount")) {
+            if (argc < 3) { printf("usage: mount <target> <file>\n"); continue; }
+            int t = atoi(argv[1]);
+            if (t < 0 || t >= STORAGE_MAX_TARGETS) {
+                printf("target must be 0-%d\n", STORAGE_MAX_TARGETS - 1); continue;
+            }
+            fuji_submit(FCON_MOUNT, (uint8_t)t, argv[2], NULL);
+        } else if (!strcmp(cmd, "unmount")) {
+            if (argc < 2) { printf("usage: unmount <target>\n"); continue; }
+            int t = atoi(argv[1]);
+            if (t < 0 || t >= STORAGE_MAX_TARGETS) {
+                printf("target must be 0-%d\n", STORAGE_MAX_TARGETS - 1); continue;
+            }
+            fuji_submit(FCON_UNMOUNT, (uint8_t)t, NULL, NULL);
+        } else if (!strcmp(cmd, "wifi")) {
+            if (argc == 1) {
+                fuji_submit(FCON_WIFI_GET, 0, NULL, NULL);
+            } else if (argc >= 3) {
+                fuji_submit(FCON_WIFI_SET, 0, argv[1], argv[2]);
+            } else {
+                printf("usage: wifi | wifi <ssid> <pass>\n");
+            }
+        } else {
+            printf("unknown command '%s' (type 'help')\n", cmd);
+        }
+    }
+    printf("(leaving FujiNet console)\n");
 }
 
 static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
@@ -482,10 +564,10 @@ static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
         return;
     }
 
-    // 'F' (uppercase) is the FujiNet bench test; check it before the tolower()
-    // fold below, where lowercase 'f' is already the SASI-log flush command.
+    // 'F' (uppercase) enters the FujiNet bench console; check it before the
+    // tolower() fold below, where lowercase 'f' is already the SASI-log flush.
     if (raw_ch == 'F') {
-        fuji_link_test();
+        fuji_console_shell();
         return;
     }
 

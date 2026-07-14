@@ -843,10 +843,10 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             }
         }
 
-        // No FujiNet direct-write bypass any more (Phase A removed
-        // pico_fujinet/spi.c). A failed storage_write_sector() is a real
-        // failure regardless of backend; the check below breaks the transfer.
-        // TODO(Phase B): route FujiNet writes through the storage_ops_t vtable.
+        // Writes route through the storage_ops_t vtable (Phase B): the target's
+        // backend (SD or FujiNet) is chosen per target inside storage_*. A
+        // failed storage_write_sector() is a real failure regardless of
+        // backend; the check below breaks the transfer (fail-fast semantics).
         uint32_t sd_wr_elapsed = (uint32_t)(time_us_64() - t0);
         sasi_op_record(sd_wr_elapsed, &sasi_op_timing.max_sd_write_us,
                        SASI_OP_SD_WRITE, sector + i);
@@ -1090,13 +1090,12 @@ bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffe
                     target, (unsigned long)sector);
     }
 
-    // No FujiNet direct-read bypass any more (Phase A removed pico_fujinet/spi.c).
-    // Any target not served by a live storage backend fails fast with a zeroed
-    // buffer -- the same missing-backend result the SD path uses -- so DOS's
-    // speculative SASI bus walk gets an immediate CHECK CONDITION instead of
-    // stalling on a handshake that never comes. That fast-fail was what kept the
-    // bus walk from blowing the 5s BIOS command timeout and wedging the bus.
-    // TODO(Phase B): route FujiNet reads through the storage_ops_t vtable.
+    // Reads route through the storage_ops_t vtable (Phase B): storage_* selects
+    // the target's backend (SD or FujiNet) per target. Any target not served by
+    // a live backend fails fast with a zeroed buffer, so DOS's speculative SASI
+    // bus walk gets an immediate CHECK CONDITION instead of stalling on a
+    // handshake that never comes -- what keeps the bus walk from blowing the 5s
+    // BIOS command timeout and wedging the bus.
     memset(buffer, 0, 512);
     return false;
 }

@@ -60,6 +60,8 @@ target_sources(dma_board PRIVATE
     pico_victor/debug_queue.c
     pico_fujinet/fuji_proto.c
     pico_fujinet/fuji_blkdev.c
+    pico_fujinet/fuji_storage.c
+    pico_fujinet/fuji_console.c
     pico_storage/storage.c
     pico_storage/fatfs_guard.c
     pico_storage/sd_storage.c

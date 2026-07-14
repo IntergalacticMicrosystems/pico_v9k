@@ -69,11 +69,22 @@ typedef struct storage_ops {
 // Initialize the storage system with the specified backend
 bool storage_init(storage_backend_t backend);
 
-// Get the current active backend type
+// Get the current active (primary/default) backend type
 storage_backend_t storage_get_backend(void);
 
-// Mount a disk image for a target
+// Backend serving a given target (STORAGE_BACKEND_NONE if unmounted). Lets the
+// console/status show which drives are SD vs FujiNet without touching the bus.
+storage_backend_t storage_get_target_backend(uint8_t target_id);
+
+// Mount a disk image for a target on the primary/default backend.
 bool storage_mount(uint8_t target_id, const char *image_path, bool read_only);
+
+// Mount a disk image for a target on a SPECIFIC backend, coexisting with other
+// backends on other targets (SD boot drive + FujiNet drives). Lazily runs the
+// backend's init() the first time it is used; the per-target read/write/sync
+// path then routes to whichever backend mounted that target.
+bool storage_mount_on(storage_backend_t backend, uint8_t target_id,
+                      const char *image_path, bool read_only);
 
 // Unmount a disk image
 bool storage_unmount(uint8_t target_id);

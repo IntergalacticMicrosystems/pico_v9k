@@ -21,6 +21,7 @@
 #include "logging.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
+#include "pico_fujinet/fuji_storage.h"
 #include "sasi_log.h"
 
 // USE_SD_STORAGE and SD_DISK_IMAGE come from CMakeLists.txt target_compile_definitions
@@ -182,6 +183,11 @@ void core1_main() {
     // on the same core.  With SPI mode the SD library uses the hardware
     // SPI1 peripheral (no PIO, no DMA IRQ handler), so there is no
     // interrupt priority conflict with the register ISR on PIO0_IRQ_0.
+    // Register the FujiNet backend unconditionally (no SPI touched) so the
+    // console mount path (fuji> mount ...) works even when SD is the primary
+    // boot backend, and so the SD-fail / no-SD fallbacks below can reach it.
+    fuji_storage_register();
+
 #if USE_SD_STORAGE
     printf("Core1: Initializing SD card storage backend...\n");
     sd_storage_register();
@@ -214,21 +220,26 @@ void core1_main() {
             }
         }
     } else {
-        // SD init failed. The old direct-FujiNet fallback (pico_fujinet/spi.c)
-        // was removed in Phase A; there is no registered FujiNet storage backend
-        // yet, so do NOT silently boot into a non-functional state.
-        // TODO(Phase B): register STORAGE_BACKEND_FUJINET and mount through the
-        // storage_ops_t vtable here.
-        printf("Core1: SD init FAILED and no FujiNet backend yet (Phase B) -- "
-               "no storage mounted\n");
+        // SD init failed: fall back to FujiNet as the boot drive. init() pings
+        // the ESP, so a missing FujiNet reports cleanly rather than hanging.
+        // A NULL image mounts whatever slots the ESP already has configured.
+        printf("Core1: SD init FAILED -- trying FujiNet fallback on target 0\n");
+        if (storage_init(STORAGE_BACKEND_FUJINET) && storage_mount(0, NULL, false)) {
+            printf("Core1: mounted FujiNet on target 0 (SD fallback)\n");
+        } else {
+            printf("Core1: no storage available (SD failed, FujiNet absent)\n");
+        }
     }
 #else
-    // Phase A ships the FujiNet SPI transport (pico_fujinet/fuji_blkdev.c) but
-    // does not register it as a storage backend. Building with USE_SD_STORAGE=0
-    // therefore leaves no storage mounted until Phase B wires the vtable.
-    // TODO(Phase B): register STORAGE_BACKEND_FUJINET and fuji_mount_all() here.
-    printf("Core1: FujiNet storage backend not implemented yet (Phase B) -- "
-           "no storage mounted\n");
+    // USE_SD_STORAGE=0: FujiNet is the primary boot backend. init() pings the
+    // ESP so an absent link reports cleanly; a NULL image mounts the ESP's
+    // preconfigured slots.
+    printf("Core1: Initializing FujiNet storage backend (primary)...\n");
+    if (storage_init(STORAGE_BACKEND_FUJINET) && storage_mount(0, NULL, false)) {
+        printf("Core1: mounted FujiNet on target 0\n");
+    } else {
+        printf("Core1: no storage available (FujiNet absent)\n");
+    }
 #endif
 
     sasi_log_init();
