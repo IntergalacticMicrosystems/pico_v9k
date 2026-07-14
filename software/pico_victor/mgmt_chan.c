@@ -17,6 +17,20 @@
  * SPSC fences match via_chan.c's __atomic_thread_fence(__ATOMIC_SEQ_CST). */
 #include "mgmt_chan.h"
 
+/* mgmt_chan_reg_write is called from the core-1 register ISR (RAM-resident).
+ * It must live in RAM too: executing it from flash means the first call after
+ * boot takes an XIP cache miss, stalling the ISR long enough for the PIO RX
+ * FIFO to back up and the register SM to miss the next bus access — the host
+ * sees one unserved (floating) read, which broke first-try DMATERM/ROM
+ * detection after a card power-up. Host test builds compile this file with
+ * plain gcc, hence the guard. */
+#ifdef PICO_BUILD
+#include "pico.h"
+#define MGMT_ISR_FUNC(name) __time_critical_func(name)
+#else
+#define MGMT_ISR_FUNC(name) name
+#endif
+
 #define MGMT_FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 
 /* Bounded spin for a full resp FIFO (~4M iters); the Victor's acks free slots. */
@@ -104,7 +118,7 @@ bool mgmt_chan_reg_read(uint8_t off, uint8_t *out)
     }
 }
 
-bool mgmt_chan_reg_write(uint8_t off, uint8_t val)
+bool MGMT_ISR_FUNC(mgmt_chan_reg_write)(uint8_t off, uint8_t val)
 {
     switch (off) {
     case MGMT_CHAN_CMD: {                       /* push a command byte + echo */
