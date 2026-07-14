@@ -10,11 +10,12 @@ build/
 *.kicad_prl
 
 # Bench session artifacts (logs, screen grabs)
-software/bench_logs/*.png
-software/bench_logs/*.log
-software/bench_logs/*.bin
-software/bench_logs/*.exe
-software/bench_logs/*.txt
+software/bench_logs/**/*.png
+software/bench_logs/**/*.log
+software/bench_logs/**/*.bin
+software/bench_logs/**/*.exe
+software/bench_logs/**/*.txt
+software/bench_logs/**/*.out
 
 # OpenWatcom build byproducts (DOS test tools)
 software/test/dos_dma_test/*.obj
