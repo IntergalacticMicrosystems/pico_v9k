@@ -99,10 +99,12 @@ the whole 0xEF3xx page and firmware decodes offsets
   Build: `./build` (nasm + add-checksum.py); test in MAME first
   (build copies test.rom into mame-files), EPROM-emu only with user OK.
   Per AGENTS.md: update its docs with the change.
-- **DOS tool**: build a DMA-card variant of `viclibc2/viaterm/viaterm.c`
-  (same code, register base 0xE F30:0x40/0x50/0x60, signature 0xD0 —
-  parameterize with #defines). Detects card, runs the same VT100 terminal
-  against the management console.
+- **DOS tool** — **DONE (2026-07-14)**: `victor_client/dmaterm.c`, a DMA-card
+  variant of `viclibc2/viaterm/viaterm.c` (same renderer/keyboard code, channel
+  registers 0xEF30:0x40/0x50/0x60, signature 0xD0). Detects card, runs the same
+  VT100 terminal against the management console. Built with OpenWatcom via
+  `victor_client/build_dos.sh` → `DMATERM.EXE` (~10 KB, clean compile). Bench
+  validation on real hardware still pending.
 
 ## Order of work
 

@@ -38,3 +38,7 @@ software/test/host/test_mgmt_tiny
 software/victor_client/*.com
 software/victor_client/*.rom
 software/victor_client/*_rom.bin
+software/victor_client/*.exe
+software/victor_client/*.EXE
+software/victor_client/*.obj
+software/victor_client/*.o
