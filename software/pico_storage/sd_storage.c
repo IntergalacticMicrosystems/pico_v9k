@@ -233,6 +233,15 @@ void sd_storage_list_images(void (*emit)(void *ctx, const char *name, unsigned s
     fatfs_guard_lock();
     DIR dir;
     FRESULT fr = f_opendir(&dir, "");
+    if (FR_OK != fr) {
+        /* Dead filesystem (see sd_storage_mount): one remount attempt so the
+         * image picker repopulates instead of silently listing nothing. */
+        printf("SD Storage: f_opendir error: %s (%d) -- trying remount\n",
+               FRESULT_str(fr), fr);
+        if (sd_storage_try_remount()) {
+            fr = f_opendir(&dir, "");
+        }
+    }
     if (FR_OK == fr) {
         FILINFO fno;
         while (FR_OK == f_readdir(&dir, &fno) && fno.fname[0] != 0) {
@@ -358,6 +367,17 @@ static bool sd_storage_mount(uint8_t target_id, const char *image_path, bool rea
     printf("SD Storage: Opening '%s'...\n", image_path);
     fatfs_guard_lock();
     FRESULT fr = f_open(&sd_state->targets[target_id].file, image_path, mode);
+    if (FR_OK != fr && fr != FR_NO_FILE && fr != FR_NO_PATH && fr != FR_INVALID_NAME) {
+        /* A dead filesystem (FR_INVALID_OBJECT after the card dropped off the
+         * bus, FR_DISK_ERR/FR_NOT_READY, ...) is recoverable even though
+         * sd_initialized is still true: reinit + remount, then retry once.
+         * A missing file is a user error, not a driver state — no remount. */
+        printf("SD Storage: f_open(%s) error: %s (%d) -- trying remount\n",
+               image_path, FRESULT_str(fr), fr);
+        if (sd_storage_try_remount()) {
+            fr = f_open(&sd_state->targets[target_id].file, image_path, mode);
+        }
+    }
     if (FR_OK != fr) {
         fatfs_guard_unlock();
         printf("SD Storage: f_open(%s) error: %s (%d)\n", image_path, FRESULT_str(fr), fr);

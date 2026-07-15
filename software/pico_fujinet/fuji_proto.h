@@ -41,6 +41,7 @@ extern "C" {
 #define FUJICMD_WRITE_HOST_SLOTS  0xF3u   /* no param + 8x32 host names (256B) */
 #define FUJICMD_SET_DEVICE_FULLPATH 0xE2u  /* deviceSlot,hostSlot,mode + 256B name */
 #define FUJICMD_UNMOUNT_IMAGE  0xE9u   /* 1 param: deviceSlot */
+#define FUJICMD_MOUNT_HOST     0xF9u   /* 1 param: hostSlot (idempotent on ESP) */
 #define FUJICMD_OPEN_DIRECTORY 0xF7u   /* 1 param: hostSlot + 256B path[/pattern] */
 #define FUJICMD_READ_DIR_ENTRY 0xF6u   /* 2 params: maxlen,addtl */
 #define FUJICMD_CLOSE_DIRECTORY 0xF5u  /* no params */

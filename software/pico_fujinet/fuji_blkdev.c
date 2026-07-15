@@ -411,6 +411,16 @@ bool fuji_select_image(uint8_t slot, const char *name, bool read_only)
                        FUJI_RETRIES, FUJI_MOUNT_FIRST_US);
 }
 
+/* Mount TNFS host slot `slot` on the ESP (FUJICMD_MOUNT_HOST, idempotent
+ * there). The ESP's OPEN_DIRECTORY handler does NOT mount its host on demand
+ * — after an ESP reboot every dir op fails with no network attempt until
+ * something mounts the slot — so the dir/stat paths below call this first. */
+static bool fuji_mount_host(uint8_t slot)
+{
+    return transact_u8(FUJI_DEVICEID_FUJINET, FUJICMD_MOUNT_HOST, &slot, 1,
+                       NULL, 0, NULL, 0, NULL, FUJI_RETRIES, FUJI_MOUNT_FIRST_US);
+}
+
 /* List *.img on the FujiNet's TNFS host slot 0. OPEN_DIRECTORY "/" with a
  * "*.img" pattern, READ_DIR_ENTRY until the 0x7F 0x7F end marker (safety-capped),
  * CLOSE_DIRECTORY always. Each entry: u32 LE size at offset 6, NUL-padded name
@@ -421,6 +431,8 @@ bool fuji_dir_list(void (*emit)(void *ctx, const char *name, unsigned size), voi
     fuji_link_init();
 
     uint8_t hostslot = 0;
+    if (!fuji_mount_host(hostslot))
+        return false;
     uint8_t path[FUJI_PATH_LEN];
     memset(path, 0, sizeof(path));
     path[0] = '/'; path[1] = 0;                 /* dir NUL-terminated, then pattern */
@@ -468,6 +480,8 @@ const char *fuji_stat(const char *name, uint32_t *size)
     if (strlen(name) >= FUJI_PATH_LEN - 2) return "name too long";
 
     uint8_t hostslot = 0;
+    if (!fuji_mount_host(hostslot))
+        return "FujiNet unreachable";
     uint8_t path[FUJI_PATH_LEN];
     memset(path, 0, sizeof(path));
     path[0] = '/'; path[1] = 0;                 /* dir NUL-terminated, then pattern */

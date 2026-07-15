@@ -23,6 +23,7 @@
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
 #include "pico_fujinet/fuji_storage.h"
+#include "pico_fujinet/fuji_blkdev.h"
 #include "sasi_log.h"
 
 // USE_SD_STORAGE and SD_DISK_IMAGE come from CMakeLists.txt target_compile_definitions
@@ -197,6 +198,15 @@ void core1_main() {
     // console mount path (fuji> mount ...) works even when SD is the primary
     // boot backend, and so the SD-fail / no-SD fallbacks below can reach it.
     fuji_storage_register();
+
+    // Drive the FujiNet CS/DRDY GPIOs NOW, before any SD traffic. Until this
+    // runs, GP45 (ESP CS) sits at the pad-reset pull-down against the ESP's
+    // internal pull-up — a mid-rail CS in the ESP's undefined logic band.
+    // With the 25 MHz SD clock toggling on the shared SPI1 bus next to it,
+    // the ESP intermittently sees itself selected and drives MISO against
+    // the SD card, corrupting SD I/O until the first fuji op finally
+    // configures the pin. Idempotent; touches only GP45/GP46.
+    fuji_link_init();
 
 #if USE_SD_STORAGE
     printf("Core1: Initializing SD card storage backend...\n");
