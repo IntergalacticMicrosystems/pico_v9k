@@ -254,6 +254,141 @@ void sd_storage_list_images(void (*emit)(void *ctx, const char *name, unsigned s
     fatfs_guard_unlock();
 }
 
+/* Shared 4 KB I/O buffer for create (zero-fill) and copy. Core 1 only, and the
+ * console mailbox allows a single op at a time, so one static buffer is safe. */
+static uint8_t sd_xfer_buf[4096];
+
+/* Map an f_open failure to a console-worthy reason. FR_LOCKED comes from
+ * FF_FS_LOCK: an image mounted on a target is open FA_WRITE, which blocks any
+ * second open — the natural "don't copy from/to a live image" guard. */
+static const char *open_err_str(FRESULT fr, bool for_write) {
+    if (fr == FR_EXIST)  return "destination exists";
+    if (fr == FR_LOCKED) return "image is mounted (eject first)";
+    return for_write ? "cannot create file" : "cannot open source";
+}
+
+const char *sd_storage_create_image(const char *name, uint32_t size_mb) {
+    if (!sd_initialized || !sd_state) return "no SD card";
+    if (!matches_pattern(name))       return "name must end .img";
+    if (size_mb < 1 || size_mb > 512) return "size must be 1-512 MB";
+
+    fatfs_guard_lock();
+    FIL f;
+    FRESULT fr = f_open(&f, name, FA_CREATE_NEW | FA_WRITE);
+    if (fr != FR_OK) {
+        fatfs_guard_unlock();
+        return open_err_str(fr, true);
+    }
+
+    const char *err = NULL;
+    FSIZE_t bytes = (FSIZE_t)size_mb << 20;
+    /* Fast contiguous allocation; fall back to a plain seek-extend (allocates a
+     * possibly fragmented chain) when no contiguous run is free. */
+    if (f_expand(&f, bytes, 1) != FR_OK &&
+        (f_lseek(&f, bytes) != FR_OK || f_tell(&f) != bytes)) {
+        err = "card full";
+    }
+    if (!err) {                       /* zero the first 64 KB (boot/partition area) */
+        memset(sd_xfer_buf, 0, sizeof sd_xfer_buf);
+        if (f_lseek(&f, 0) != FR_OK) err = "seek failed";
+        for (int i = 0; !err && i < 16; i++) {
+            UINT bw;
+            if (f_write(&f, sd_xfer_buf, sizeof sd_xfer_buf, &bw) != FR_OK ||
+                bw != sizeof sd_xfer_buf)
+                err = "write failed";
+        }
+    }
+    if (f_close(&f) != FR_OK && !err) err = "close failed";
+    if (err) f_unlink(name);          /* no partial images on the card */
+    fatfs_guard_unlock();
+    return err;
+}
+
+const char *sd_storage_delete_image(const char *name) {
+    if (!sd_initialized || !sd_state) return "no SD card";
+    if (!matches_pattern(name))       return "name must end .img";
+
+    fatfs_guard_lock();
+    FRESULT fr = f_unlink(name);
+    fatfs_guard_unlock();
+    if (fr == FR_OK)      return NULL;
+    if (fr == FR_LOCKED)  return "image is mounted (eject first)";
+    if (fr == FR_NO_FILE) return "no such file";
+    return "delete failed";
+}
+
+/* ---- chunked copy state (single op at a time via the console mailbox) ----- */
+static struct {
+    bool active;
+    FIL  in, out;
+    char dst[FILENAME_MAX_LENGTH];
+} sd_copy;
+
+static void sd_copy_finish(bool unlink_dst) {
+    f_close(&sd_copy.in);
+    f_close(&sd_copy.out);
+    if (unlink_dst) f_unlink(sd_copy.dst);
+    sd_copy.active = false;
+}
+
+const char *sd_storage_copy_begin(const char *src, const char *dst) {
+    if (!sd_initialized || !sd_state) return "no SD card";
+    if (sd_copy.active)               return "copy already running";
+    if (!matches_pattern(dst))        return "name must end .img";
+    if (strlen(dst) >= sizeof sd_copy.dst) return "name too long";
+
+    fatfs_guard_lock();
+    FRESULT fr = f_open(&sd_copy.in, src, FA_READ);
+    if (fr != FR_OK) {
+        fatfs_guard_unlock();
+        return open_err_str(fr, false);
+    }
+    fr = f_open(&sd_copy.out, dst, FA_CREATE_NEW | FA_WRITE);
+    if (fr != FR_OK) {
+        f_close(&sd_copy.in);
+        fatfs_guard_unlock();
+        return open_err_str(fr, true);
+    }
+    fatfs_guard_unlock();
+    snprintf(sd_copy.dst, sizeof sd_copy.dst, "%s", dst);
+    sd_copy.active = true;
+    return NULL;
+}
+
+int sd_storage_copy_step(const char **err) {
+    if (!sd_copy.active) { *err = "no copy running"; return -1; }
+
+    /* One ~32 KB chunk per call (8 x 4 KB): long enough to make progress,
+     * short enough that SASI service between chunks stays responsive. */
+    fatfs_guard_lock();
+    for (int i = 0; i < 8; i++) {
+        UINT br, bw;
+        if (f_read(&sd_copy.in, sd_xfer_buf, sizeof sd_xfer_buf, &br) != FR_OK) {
+            sd_copy_finish(true);
+            fatfs_guard_unlock();
+            *err = "read failed";
+            return -1;
+        }
+        if (br == 0) {                /* EOF: success */
+            FRESULT fr = f_close(&sd_copy.out);
+            f_close(&sd_copy.in);
+            sd_copy.active = false;
+            if (fr != FR_OK) f_unlink(sd_copy.dst);
+            fatfs_guard_unlock();
+            if (fr != FR_OK) { *err = "close failed"; return -1; }
+            return 0;
+        }
+        if (f_write(&sd_copy.out, sd_xfer_buf, br, &bw) != FR_OK || bw != br) {
+            sd_copy_finish(true);
+            fatfs_guard_unlock();
+            *err = "write failed (card full?)";
+            return -1;
+        }
+    }
+    fatfs_guard_unlock();
+    return 1;
+}
+
 static bool sd_storage_init(void) {
     if (sd_initialized) {
         return true;

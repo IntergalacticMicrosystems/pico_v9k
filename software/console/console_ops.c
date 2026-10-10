@@ -49,6 +49,8 @@ static uint32_t op_timeout_ms(console_op_t op) {
     case CONOP_EJECT:    return 10000;
     case CONOP_WIFI_SET:
     case CONOP_SCAN:     return 20000;
+    case CONOP_CREATE:   return 60000;
+    case CONOP_COPY:     return 300000;  /* ~30 MB at SD-SPI pace, chunked */
     default:             return 10000;
     }
 }
@@ -162,11 +164,49 @@ static void do_scan(void) {
     s_res.ok = true;
 }
 
+static void do_create(void) {
+    const char *err = sd_storage_create_image(s_arg1, s_lba);
+    s_res.ok = !err;
+    if (err) snprintf(s_res.err, sizeof s_res.err, "%s", err);
+}
+
+static void do_rm(void) {
+    const char *err = sd_storage_delete_image(s_arg1);
+    s_res.ok = !err;
+    if (err) snprintf(s_res.err, sizeof s_res.err, "%s", err);
+}
+
+/* CONOP_COPY runs chunked: begin on the first service() pass, then one
+ * sd_storage_copy_step() per pass — the op stays PENDING between chunks so the
+ * rest of core 1's loop (SASI/defer work) keeps running during a long copy. */
+static bool s_copy_running;
+
 void console_op_service(void) {
     if (s_state != CONOP_PENDING) return;   /* O(1) idle path: one volatile load */
     __dmb();
 
+    if (s_copy_running) {                   /* chunked CONOP_COPY in flight */
+        const char *err = NULL;
+        int rc = sd_storage_copy_step(&err);
+        if (rc > 0) return;                 /* more chunks; stay PENDING */
+        s_copy_running = false;
+        s_res.ok = (rc == 0);
+        if (rc < 0) snprintf(s_res.err, sizeof s_res.err, "%s", err);
+        __dmb();
+        s_state = CONOP_DONE;
+        return;
+    }
+
     memset(&s_res, 0, sizeof s_res);
+    if (s_op == CONOP_COPY) {
+        const char *err = sd_storage_copy_begin(s_arg1, s_arg2);
+        if (!err) { s_copy_running = true; return; }   /* chunks follow */
+        s_res.ok = false;
+        snprintf(s_res.err, sizeof s_res.err, "%s", err);
+        __dmb();
+        s_state = CONOP_DONE;
+        return;
+    }
     switch (s_op) {
     case CONOP_PING:     do_ping();     break;
     case CONOP_LS_SD:    do_ls_sd();    break;
@@ -178,6 +218,8 @@ void console_op_service(void) {
     case CONOP_WIFI_SET: do_wifi_set(); break;
     case CONOP_SCAN:     do_scan();     break;
     case CONOP_STATUS:   do_status();   break;
+    case CONOP_CREATE:   do_create();   break;
+    case CONOP_RM:       do_rm();       break;
     default:             s_res.ok = false;
                          snprintf(s_res.err, sizeof s_res.err, "unknown op"); break;
     }

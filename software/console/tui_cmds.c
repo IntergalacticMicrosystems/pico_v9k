@@ -72,6 +72,9 @@ static void cmd_help(mtui_line_t *ln, int argc, char **argv) {
         "  status             per target 0-7 with a backend: '<t> <name> <backend> <state> <sectors>'\n"
         "  mount <t> <[sd:|fuji:]file>  insert an image on SASI target t (bare name = sd:)\n"
         "  eject <t>          leave SASI target t empty\n"
+        "  create <file.img> <sizeMB>   new blank SD image (1-512 MB)\n"
+        "  copy <src> <dst>   duplicate an SD image (blocks; a 30 MB image takes ~2 min)\n"
+        "  rm <file.img>      delete an unmounted SD image\n"
         "  peek <t> <lba>     hex-dump one 512-byte sector of a mounted target\n"
         "  wifi               ESP32 WiFi: '<ssid|-> <connected|disconnected>'\n"
         "  wifi scan          list visible networks: '<rssi-dBm> <ssid>' per line\n"
@@ -157,6 +160,48 @@ static void cmd_peek(mtui_line_t *ln, int argc, char **argv) {
         mtui_line_write(ln, "\n");
     }
     mtui_line_write(ln, "OK\n");
+}
+
+/* Strip an "sd:" prefix; reject other namespaces (create/copy are SD-only). */
+static const char *sd_name(const char *s) {
+    if (!s) return NULL;
+    if (!strncmp(s, "sd:", 3)) s += 3;
+    if (strchr(s, ':')) return NULL;    /* fuji: or other namespace */
+    return *s ? s : NULL;
+}
+
+static void cmd_create(mtui_line_t *ln, int argc, char **argv) {
+    const char *name = sd_name(argc > 1 ? argv[1] : NULL);
+    char *end = NULL;
+    unsigned long mb = (argc > 2) ? strtoul(argv[2], &end, 10) : 0;
+    if (!name || !end || *end || !mb) {
+        mtui_line_write(ln, "ERR usage: create <file.img> <sizeMB>\n");
+        return;
+    }
+    const conop_result_t *r = console_op_submit(CONOP_CREATE, 0, 0, (uint32_t)mb,
+                                                name, NULL);
+    if (!r)         mtui_line_write(ln, "ERR busy (core 1)\n");
+    else if (r->ok) mtui_line_write(ln, "OK\n");
+    else            mtui_line_printf(ln, "ERR %s\n", r->err);
+}
+
+static void cmd_rm(mtui_line_t *ln, int argc, char **argv) {
+    const char *name = sd_name(argc > 1 ? argv[1] : NULL);
+    if (!name) { mtui_line_write(ln, "ERR usage: rm <file.img> (sd only)\n"); return; }
+    const conop_result_t *r = console_op_submit(CONOP_RM, 0, 0, 0, name, NULL);
+    if (!r)         mtui_line_write(ln, "ERR busy (core 1)\n");
+    else if (r->ok) mtui_line_write(ln, "OK\n");
+    else            mtui_line_printf(ln, "ERR %s\n", r->err);
+}
+
+static void cmd_copy(mtui_line_t *ln, int argc, char **argv) {
+    const char *src = sd_name(argc > 1 ? argv[1] : NULL);
+    const char *dst = sd_name(argc > 2 ? argv[2] : NULL);
+    if (!src || !dst) { mtui_line_write(ln, "ERR usage: copy <src> <dst> (sd only)\n"); return; }
+    const conop_result_t *r = console_op_submit(CONOP_COPY, 0, 0, 0, src, dst);
+    if (!r)         mtui_line_write(ln, "ERR busy (core 1)\n");
+    else if (r->ok) mtui_line_write(ln, "OK\n");
+    else            mtui_line_printf(ln, "ERR %s\n", r->err);
 }
 
 static void cmd_wifi(mtui_line_t *ln, int argc, char **argv) {
@@ -247,6 +292,9 @@ static const mtui_line_cmd_t k_cmds[] = {
     { "mount",  NULL, cmd_mount_eject },
     { "eject",  NULL, cmd_mount_eject },
     { "peek",   NULL, cmd_peek },
+    { "create", NULL, cmd_create },
+    { "copy",   NULL, cmd_copy },
+    { "rm",     NULL, cmd_rm },
     { "wifi",   NULL, cmd_wifi },
     { "diag",   NULL, cmd_diag },
     { "buscap", NULL, cmd_buscap },

@@ -41,6 +41,10 @@ typedef enum {
     CONOP_WIFI_SET,     /* arg1=ssid, arg2=password */
     CONOP_SCAN,         /* -> scan_ssid[]/scan_rssi[] */
     CONOP_STATUS,       /* per-target backend/mounted/capacity/name -> rows[] */
+    CONOP_CREATE,       /* arg1=name, lba=size in MB: new blank SD image */
+    CONOP_COPY,         /* arg1=src, arg2=dst: duplicate an SD image (chunked
+                           on core 1 so SASI stays serviced; core 0 blocks) */
+    CONOP_RM,           /* arg1=name: delete an (unmounted) SD image */
 } console_op_t;
 
 #define CONOP_MAX_ENTRIES 32

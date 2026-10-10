@@ -33,6 +33,26 @@ const char* sd_storage_get_image_name(int index);
 void sd_storage_list_images(void (*emit)(void *ctx, const char *name, unsigned size),
                             void *ctx);
 
+// Create a new blank <name>.img of size_mb MB (console `create`). The data
+// area is allocated without zero-fill (like a factory-fresh MFM drive) except
+// the first 64 KB, which is zeroed so no stale boot sector/partition table is
+// visible. Returns NULL on success or a short error string for the console's
+// ERR reply. Core 1 only (FatFS/SPI).
+const char *sd_storage_create_image(const char *name, uint32_t size_mb);
+
+// Delete an image file (console `rm`). Refuses a mounted image (FF_FS_LOCK
+// keeps its FIL open). Returns NULL on success or a short error string.
+// Core 1 only (FatFS/SPI).
+const char *sd_storage_delete_image(const char *name);
+
+// Chunked image copy (console `copy`): begin opens both files (returns NULL or
+// an error string); each step call copies one chunk so core 1's loop keeps
+// servicing SASI between chunks. step returns 1 = more work, 0 = done (files
+// closed), -1 = failed (*err set, files closed, partial dst removed). Core 1
+// only.
+const char *sd_storage_copy_begin(const char *src, const char *dst);
+int sd_storage_copy_step(const char **err);
+
 #ifdef __cplusplus
 }
 #endif
