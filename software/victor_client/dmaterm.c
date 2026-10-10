@@ -361,7 +361,7 @@ int main(void)
     unsigned char st;
     char line[6];              /* local shadow of the current input line */
     int llen = 0;              /* chars since last CR; >5 = "can't be exit" */
-    int c, d, drained;
+    int c, d, d2, drained;
 
     via = (volatile unsigned char __far *)MK_FP(CH_SEG, 0);
 
@@ -465,6 +465,16 @@ int main(void)
         drained = 0;
         while ((st & ST_READY) && ((st & ST_PHASE) != last_phase)) {
             d = via[RESP_OFF];                 /* grab the byte... */
+            do {                               /* re-read until two consecutive
+                                                  reads agree: under heavy card-
+                                                  side load a read can sample the
+                                                  bus mid-drive and latch address-
+                                                  residual bits (junk chars).
+                                                  RESP reads are side-effect-free
+                                                  until the ack. */
+                d2 = d;
+                d = via[RESP_OFF];
+            } while (d != d2);
             via[RESP_OFF] = 0;                 /* ...ack at once, so the firmware
                                                   stages the next byte while we
                                                   render this one */

@@ -88,6 +88,19 @@ static void status_store(void)
     *s_status = v;
 }
 
+/* Publish trace (junk-chars debug): every byte handed to the bus-side RESP
+ * cell, with the phase it was published under and a us timestamp (20 bits,
+ * matching mgmt_bus_trace). Entry = phase<<28 | byte<<20 | us. Compared
+ * against the ISR-side mgmt_bus_trace to localize stream tears. */
+volatile uint32_t mgmt_pub_trace[4096];
+volatile uint32_t mgmt_pub_trace_head;
+#ifdef PICO_BUILD
+#include "hardware/timer.h"
+#define MGMT_PUB_TS() (time_us_32() & 0xFFFFFu)
+#else
+#define MGMT_PUB_TS() 0u
+#endif
+
 /* Publish step: if the Victor has acked the last byte, hand out the next one
  * (byte visible before status) or clear RESP_READY when the FIFO has drained. */
 static void mgmt_chan_publish(void)
@@ -102,6 +115,9 @@ static void mgmt_chan_publish(void)
         s_resp_ready = true;
         s_served++;                             /* await the Victor's ack */
         status_store();
+        mgmt_pub_trace[mgmt_pub_trace_head & 4095u] =
+            (s_phase ? (1u << 28) : 0u) | ((uint32_t)b << 20) | MGMT_PUB_TS();
+        mgmt_pub_trace_head++;
     } else if (s_resp_ready) {                  /* drained: drop READY, keep phase */
         s_resp_ready = false;
         status_store();

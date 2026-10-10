@@ -53,6 +53,29 @@ volatile uint32_t diag_other_reads = 0;
 volatile uint32_t diag_writes = 0;
 volatile uint32_t diag_last_phase = 0;
 
+// Bus-level mgmt-channel trace (junk-chars debug): one 2-store record per mgmt
+// register access — cheap enough for the ISR serve budget (heavier per-entry
+// tracing is known to break it). Entry = type<<28 | data<<20 | us-timestamp,
+// where type is offset>>4 for a read prefetch (4/5/6 = CMD/STATUS/RESP) and
+// (offset>>4)|8 for a write, and the low 20 bits are time_us_32() (1s wrap).
+// Idle STATUS polls (same value back-to-back) are deduped so the megahertz
+// idle loop can't flood the ring. Dumped via openocd while running.
+volatile uint32_t mgmt_bus_trace[8192];
+volatile uint32_t mgmt_bus_trace_head;
+static uint32_t mgmt_bus_trace_last;   /* last recorded type|data, for dedup */
+
+static inline void mgmt_bus_trace_record(uint32_t offset, uint32_t is_write,
+                                         uint8_t data) {
+    uint32_t key = (((offset >> 4) | (is_write ? 8u : 0u)) << 28) |
+                   ((uint32_t)data << 20);
+    if (key == mgmt_bus_trace_last && (key >> 28) == 5u)
+        return;                        /* repeated STATUS read: skip */
+    mgmt_bus_trace_last = key;
+    uint32_t h = mgmt_bus_trace_head;
+    mgmt_bus_trace[h & 8191u] = key | (time_us_32() & 0xFFFFFu);
+    mgmt_bus_trace_head = h + 1u;
+}
+
 // Safe PIO TX FIFO put: skip if full (ISR must never block).
 // Increments isr_tx_fifo_full_count on overflow for diagnostics.
 static inline void pio_sm_put_isr_safe(PIO pio, uint sm, uint32_t data) {
@@ -327,6 +350,12 @@ void __time_critical_func(register_read_irq_isr)() {
                 uint32_t payload = (0xFF << 8) | (data & 0xFF);
                 pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, payload);
 
+                if (masked_offset == MGMT_CHAN_CMD ||
+                    masked_offset == MGMT_CHAN_STATUS ||
+                    masked_offset == MGMT_CHAN_RESP) {
+                    mgmt_bus_trace_record(masked_offset, 0, data);
+                }
+
                 uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
                 fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
                 break;
@@ -445,6 +474,7 @@ void __time_critical_func(register_read_irq_isr)() {
                     // STATUS -> set the atomic reset-request flag (core 0 flushes);
                     // RESP -> bump the atomic ack counter. All O(1).
                     mgmt_chan_reg_write(masked_offset, data);
+                    mgmt_bus_trace_record(masked_offset, 1, data);
                 }
 
                 if (is_addr_reg) {

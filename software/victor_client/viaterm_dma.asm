@@ -296,6 +296,12 @@ mainloop:
 	cmp	dl, [last_phase]
 	je	.done
 	mov	al, [es:RESP]		; grab the byte...
+.vrfy:	mov	ah, al			; re-read until two consecutive reads
+	mov	al, [es:RESP]		;   agree: under heavy card-side load a
+	cmp	al, ah			;   read can sample the bus mid-drive and
+	jne	.vrfy			;   latch address-residual bits (junk
+					;   chars). RESP reads are side-effect-
+					;   free until the ack, so this is safe.
 	mov	byte [es:RESP], 0	; ...ack at once (firmware stages the
 					;    next byte while we render)
 	mov	[last_phase], dl
